@@ -1,6 +1,5 @@
 var core = require('../core'),
     DisplayObject = core.DisplayObject,
-    glMat            = require('gl-matrix'),
     _tempMatrix = new core.Matrix();
 
 DisplayObject.prototype._cacheAsBitmap = false;
@@ -39,7 +38,6 @@ Object.defineProperties(DisplayObject.prototype, {
             if (value)
             {
                 this._originalRenderWebGL = this.renderWebGL;
-                this._originalRenderWebGL3d = this.renderWebGL3d;
                 this._originalRenderCanvas = this.renderCanvas;
 
                 this._originalUpdateTransform = this.updateTransform;
@@ -50,8 +48,6 @@ Object.defineProperties(DisplayObject.prototype, {
                 this._originalContainsPoint = this.containsPoint;
 
                 this.renderWebGL = this._renderCachedWebGL;
-                this.renderWebGL3d = this._renderCachedWebGL3d;
-
                 this.renderCanvas = this._renderCachedCanvas;
 
                 this.destroy = this._cacheAsBitmapDestroy;
@@ -65,8 +61,6 @@ Object.defineProperties(DisplayObject.prototype, {
                 }
 
                 this.renderWebGL = this._originalRenderWebGL;
-                this.renderWebGL3d = this._originalRenderWebGL3d;
-              
                 this.renderCanvas = this._originalRenderCanvas;
                 this.getBounds = this._originalGetBounds;
 
@@ -95,32 +89,8 @@ DisplayObject.prototype._renderCachedWebGL = function (renderer)
 
     this._cachedSprite.worldAlpha = this.worldAlpha;
 
-    renderer.setObjectRenderer(renderer.plugins.sprite);
-
-
-    renderer.plugins.sprite.render( this._cachedSprite );
+    this._cachedSprite._renderWebGL(renderer);
 };
-
-
-DisplayObject.prototype._renderCachedWebGL3d = function (renderer)
-{
-    if (!this.visible || this.worldAlpha <= 0 || !this.renderable)
-    {
-        return;
-    }
-
-    this._initCachedDisplayObject( renderer );
-
-    this._cachedSprite.worldAlpha = this.worldAlpha;
-
-    this._cachedSprite.worldTransform3d = this.worldTransform3d;
-    renderer.setObjectRenderer( renderer.plugins.sprite3d );
-    renderer.plugins.sprite3d.render( this._cachedSprite );
-
-//    renderer.setObjectRenderer(renderer.plugins.sprite);
-  //  renderer.plugins.sprite.render( this._cachedSprite );
-};
-
 
 /**
 * Prepares the WebGL renderer to cache the sprite
@@ -156,12 +126,13 @@ DisplayObject.prototype._initCachedDisplayObject = function (renderer)
 
     // for now we cache the current renderTarget that the webGL renderer is currently using.
     // this could be more elegent..
-    var cachedRenderTarget = renderer.currentRenderTarget;
+    var cachedRenderTarget = renderer._activeRenderTarget;
     // We also store the filter stack - I will definitely look to change how this works a little later down the line.
     var stack = renderer.filterManager.filterStack;
 
     // this renderTexture will be used to store the cached DisplayObject
-    var renderTexture = new core.RenderTexture(renderer, bounds.width | 0, bounds.height | 0);
+
+    var renderTexture = core.RenderTexture.create(bounds.width | 0, bounds.height | 0);
 
     // need to set //
     var m = _tempMatrix;
@@ -169,40 +140,24 @@ DisplayObject.prototype._initCachedDisplayObject = function (renderer)
     m.tx = -bounds.x;
     m.ty = -bounds.y;
 
-
-
     // set all properties to there original so we can render to a texture
     this.renderWebGL = this._originalRenderWebGL;
 
-    renderTexture.render(this, m, true, true);
-
+    renderer.render(this, renderTexture, true, m, true);
     // now restore the state be setting the new properties
-    renderer.setRenderTarget(cachedRenderTarget);
+
+    renderer.bindRenderTarget(cachedRenderTarget);
+
     renderer.filterManager.filterStack = stack;
 
     this.renderWebGL     = this._renderCachedWebGL;
     this.updateTransform = this.displayObjectUpdateTransform;
-    
-    // TODO THIS NEEDS TO BE REFACTORED! But lets wait till we know its all working..
-    this.updateTransform3d = function(){
-        this.convertFrom2dTo3d();
-        glMat.mat4.multiply(this.worldTransform3d, this.parent.worldTransform3d, this.worldTransform3d);
-    }
-
     this.getBounds       = this._getCachedBounds;
 
 
     // create our cached sprite
     this._cachedSprite = new core.Sprite(renderTexture);
-    this._cachedSprite.worldTransform = this.worldTransform;
-
-    if(!this.worldTransform3d)
-    {
-        this.worldTransform3d = glMat.mat4.create();
-    }
-
-    this._cachedSprite.worldTransform3d = this.worldTransform3d;
-
+    this._cachedSprite.computedTransform = this.computedTransform;
     this._cachedSprite.anchor.x = -( bounds.x / bounds.width );
     this._cachedSprite.anchor.y = -( bounds.y / bounds.height );
 
@@ -252,18 +207,22 @@ DisplayObject.prototype._initCachedDisplayObjectCanvas = function (renderer)
 
     var cachedRenderTarget = renderer.context;
 
-    var renderTexture = new core.RenderTexture(renderer, bounds.width | 0, bounds.height | 0);
+    var renderTexture = new core.RenderTexture.create(bounds.width | 0, bounds.height | 0);
 
     // need to set //
     var m = _tempMatrix;
+    this.projectionMatrix2d.copy(m);
+    m.invert();
 
-    m.tx = -bounds.x;
-    m.ty = -bounds.y;
+    m.tx -= bounds.x;
+    m.ty -= bounds.y;
 
-    // set all properties to there original so we can render to a texture
+    //m.append(this.worldTransform.)
+     // set all properties to there original so we can render to a texture
     this.renderCanvas = this._originalRenderCanvas;
 
-    renderTexture.render(this, m, true);
+    //renderTexture.render(this, m, true);
+    renderer.render(this, renderTexture, true, m, false);
 
     // now restore the state be setting the new properties
     renderer.context = cachedRenderTarget;
@@ -275,7 +234,7 @@ DisplayObject.prototype._initCachedDisplayObjectCanvas = function (renderer)
 
     // create our cached sprite
     this._cachedSprite = new core.Sprite(renderTexture);
-    this._cachedSprite.worldTransform = this.worldTransform;
+    this._cachedSprite.computedTransform = this.computedTransform;
     this._cachedSprite.anchor.x = -( bounds.x / bounds.width );
     this._cachedSprite.anchor.y = -( bounds.y / bounds.height );
 
@@ -303,7 +262,7 @@ DisplayObject.prototype._getCachedBounds = function ()
 */
 DisplayObject.prototype._destroyCachedDisplayObject = function ()
 {
-    this._cachedSprite._texture.destroy();
+    this._cachedSprite._texture.destroy(true);
     this._cachedSprite = null;
 };
 

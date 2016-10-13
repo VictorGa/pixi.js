@@ -1,8 +1,6 @@
 var math = require('../math'),
     utils = require('../utils'),
-    DisplayObject = require('./DisplayObject'),
-    RenderTexture = require('../textures/RenderTexture'),
-    _tempMatrix = new math.Matrix();
+    DisplayObject = require('./DisplayObject');
 
 /**
  * A Container represents a collection of display objects.
@@ -27,6 +25,12 @@ function Container()
      * @readonly
      */
     this.children = [];
+
+    /**
+     * Display post order, to determine if some element is a direct child of this container
+     * @type {number}
+     */
+    this.updatePostOrder = 0;
 }
 
 // constructor
@@ -48,6 +52,7 @@ Object.defineProperties(Container.prototype, {
         },
         set: function (value)
         {
+
             var width = this.getLocalBounds().width;
 
             if (width !== 0)
@@ -58,7 +63,6 @@ Object.defineProperties(Container.prototype, {
             {
                 this.scale.x = 1;
             }
-
 
             this._width = value;
         }
@@ -102,11 +106,11 @@ Object.defineProperties(Container.prototype, {
 Container.prototype.onChildrenChange = function () {};
 
 /**
- * Adds a child to the container.
+ * Adds a child or multiple children to the container.
  *
- * You can also add multple items like so: myContainer.addChild(thinkOne, thingTwo, thingThree)
- * @param child {PIXI.DisplayObject} The DisplayObject to add to the container
- * @return {PIXI.DisplayObject} The child that was added.
+ * Multple items can be added like so: `myContainer.addChild(thinkOne, thingTwo, thingThree)`
+ * @param child {...PIXI.DisplayObject} The DisplayObject(s) to add to the container
+ * @return {PIXI.DisplayObject} The first child that was added.
  */
 Container.prototype.addChild = function (child)
 {
@@ -355,29 +359,6 @@ Container.prototype.removeChildren = function (beginIndex, endIndex)
     }
 };
 
-/**
- * Useful function that returns a texture of the display object that can then be used to create sprites
- * This can be quite useful if your displayObject is static / complicated and needs to be reused multiple times.
- *
- * @param renderer {PIXI.CanvasRenderer|PIXI.WebGLRenderer} The renderer used to generate the texture.
- * @param resolution {number} The resolution of the texture being generated
- * @param scaleMode {number} See {@link PIXI.SCALE_MODES} for possible values
- * @return {PIXI.Texture} a texture of the display object
- */
-Container.prototype.generateTexture = function (renderer, resolution, scaleMode)
-{
-    var bounds = this.getLocalBounds();
-
-    var renderTexture = new RenderTexture(renderer, bounds.width | 0, bounds.height | 0, scaleMode, resolution);
-
-    _tempMatrix.tx = -bounds.x;
-    _tempMatrix.ty = -bounds.y;
-
-    renderTexture.render(this, _tempMatrix);
-
-    return renderTexture;
-};
-
 /*
  * Updates the transform on all children of this container for rendering
  *
@@ -396,81 +377,177 @@ Container.prototype.updateTransform = function ()
     {
         this.children[i].updateTransform();
     }
+
+    this.updatePostOrder = utils.incUpdateOrder();
 };
 
 // performance increase to avoid using call.. (10x faster)
 Container.prototype.containerUpdateTransform = Container.prototype.updateTransform;
 
+Container.prototype._getChildBounds = function() {
+    if (this.children.length === 0)
+    {
+        return math.Rectangle.EMPTY;
+    }
+
+    var minX = Infinity;
+    var minY = Infinity;
+
+    var maxX = -Infinity;
+    var maxY = -Infinity;
+
+    var childVisible = false;
+    var bounds = this._bounds;
+
+    var childBounds;
+    var childMaxX;
+    var childMaxY;
+
+    for (var i = 0, j = this.children.length; i < j; ++i)
+    {
+        var child = this.children[i];
+
+        if (!child.visible)
+        {
+            continue;
+        }
+
+        childBounds = this.children[i].getBounds();
+        if (childBounds === math.Rectangle.EMPTY) {
+            continue;
+        }
+        childVisible = true;
+
+        minX = minX < childBounds.x ? minX : childBounds.x;
+        minY = minY < childBounds.y ? minY : childBounds.y;
+
+        childMaxX = childBounds.width + childBounds.x;
+        childMaxY = childBounds.height + childBounds.y;
+
+        maxX = maxX > childMaxX ? maxX : childMaxX;
+        maxY = maxY > childMaxY ? maxY : childMaxY;
+    }
+
+    bounds.x = minX;
+    bounds.y = minY;
+    bounds.width = maxX - minX;
+    bounds.height = maxY - minY;
+
+    if (!childVisible)
+    {
+        return math.Rectangle.EMPTY;
+    }
+    return bounds;
+};
+
+Container.prototype._getChildComputedBounds = function() {
+    if (this.children.length === 0)
+    {
+        return math.Rectangle.EMPTY;
+    }
+
+    var minX = Infinity;
+    var minY = Infinity;
+
+    var maxX = -Infinity;
+    var maxY = -Infinity;
+
+    var childVisible = false;
+    var bounds = this._computedBounds;
+
+    var childBounds;
+    var childMaxX;
+    var childMaxY;
+
+    for (var i = 0, j = this.children.length; i < j; ++i)
+    {
+        var child = this.children[i];
+
+        if (!child.visible)
+        {
+            continue;
+        }
+
+        childBounds = this.children[i].getComputedBounds();
+        if (childBounds === math.Rectangle.EMPTY) {
+            continue;
+        }
+        childVisible = true;
+
+        minX = minX < childBounds.x ? minX : childBounds.x;
+        minY = minY < childBounds.y ? minY : childBounds.y;
+
+        childMaxX = childBounds.width + childBounds.x;
+        childMaxY = childBounds.height + childBounds.y;
+
+        maxX = maxX > childMaxX ? maxX : childMaxX;
+        maxY = maxY > childMaxY ? maxY : childMaxY;
+    }
+
+    bounds.x = minX;
+    bounds.y = minY;
+    bounds.width = maxX - minX;
+    bounds.height = maxY - minY;
+
+    if (!childVisible)
+    {
+        return math.Rectangle.EMPTY;
+    }
+    return bounds;
+};
+
 /**
- * Retrieves the bounds of the Container as a rectangle. The bounds calculation takes all visible children into consideration.
+* Retrieves the bounds of the Container as a rectangle. The bounds calculation takes all visible children into consideration.
  *
+ * @param matrix {PIXI.Matrix} just a legacy
  * @return {PIXI.Rectangle} The rectangular bounding area
  */
 Container.prototype.getBounds = function ()
 {
-    if(!this._currentBounds)
-    {
-
-        if (this.children.length === 0)
-        {
-            return math.Rectangle.EMPTY;
-        }
-
-        // TODO the bounds have already been calculated this render session so return what we have
-
-        var minX = Infinity;
-        var minY = Infinity;
-
-        var maxX = -Infinity;
-        var maxY = -Infinity;
-
-        var childBounds;
-        var childMaxX;
-        var childMaxY;
-
-        var childVisible = false;
-
-        for (var i = 0, j = this.children.length; i < j; ++i)
-        {
-            var child = this.children[i];
-
-            if (!child.visible)
-            {
-                continue;
-            }
-
-            childBounds = this.children[i].getBounds();
-            if (childBounds === math.Rectangle.EMPTY) {
-                continue;
-            }
-            childVisible = true;
-
-            minX = minX < childBounds.x ? minX : childBounds.x;
-            minY = minY < childBounds.y ? minY : childBounds.y;
-
-            childMaxX = childBounds.width + childBounds.x;
-            childMaxY = childBounds.height + childBounds.y;
-
-            maxX = maxX > childMaxX ? maxX : childMaxX;
-            maxY = maxY > childMaxY ? maxY : childMaxY;
-        }
-
-        if (!childVisible)
-        {
-            return this._currentBounds = math.Rectangle.EMPTY;
-        }
-
-        var bounds = this._bounds;
-
-        bounds.x = minX;
-        bounds.y = minY;
-        bounds.width = maxX - minX;
-        bounds.height = maxY - minY;
-
-        this._currentBounds = bounds;
+    if (this._localBounds) {
+        return this._localBounds.getBounds(this.computedTransform, this.worldProjection);
     }
 
+    if(!this._currentBounds)
+    {
+        var geom = this.updateProjectedGeometry();
+        if (!geom)
+        {
+            this._currentBounds = this._getChildBounds();
+        } else
+        {
+            this._currentBounds = geom.getBounds();
+            this._currentBounds.enlarge(this._getChildBounds());
+        }
+    }
     return this._currentBounds;
+};
+
+/**
+ *
+ * Retrieves the computed bounds of the Container as a rectangle object
+ *
+ * @param matrix {PIXI.Matrix}
+ * @return {PIXI.Rectangle} the rectangular bounding area
+ */
+Container.prototype.getComputedBounds = function () // jshint unused:false
+{
+    if (this._localBounds) {
+        return this._localBounds.getComputedBounds(this.computedTransform);
+    }
+    if(!this._currentComputedBounds)
+    {
+        var geom = this.updateGeometry();
+        if (!geom)
+        {
+            this._currentComputedBounds = this._getChildComputedBounds();
+        } else
+        {
+            this._currentComputedBounds = geom.getBounds();
+            this._currentComputedBounds.enlarge(this._getChildComputedBounds());
+        }
+    }
+    return this._currentComputedBounds;
 };
 
 Container.prototype.containerGetBounds = Container.prototype.getBounds;
@@ -483,20 +560,27 @@ Container.prototype.containerGetBounds = Container.prototype.getBounds;
  */
 Container.prototype.getLocalBounds = function ()
 {
-    var matrixCache = this.worldTransform;
+    if (this._localBounds) {
+        return this._localBounds.local.getBounds();
+    }
 
-    this.worldTransform = math.Matrix.IDENTITY;
+    var ID = this.computedTransform.getIdentityTransform();
 
     for (var i = 0, j = this.children.length; i < j; ++i)
     {
-        this.children[i].updateTransform();
+        this.children[i].updateTransform(ID);
     }
 
-    this.worldTransform = matrixCache;
-
-    this._currentBounds = null;
-
-    return this.getBounds( math.Matrix.IDENTITY );
+    var geom = this.geometry;
+    if (!geom)
+    {
+        this._currentBounds = this._getChildBounds();
+    } else
+    {
+        this._currentBounds = geom.getBounds();
+        this._currentBounds.enlarge(this._getChildBounds());
+    }
+    return this._currentBounds;
 };
 
 /**
@@ -506,9 +590,15 @@ Container.prototype.getLocalBounds = function ()
  */
 Container.prototype.renderWebGL = function (renderer)
 {
-
     // if the object is not visible or the alpha is 0 then no need to render this element
-    if (!this.visible || this.worldAlpha <= 0 || !this.renderable)
+    if (!this.visible) {
+        this.displayOrder = 0;
+        return;
+    }
+
+    this.displayOrder = utils.incDisplayOrder();
+
+    if (this.worldAlpha <= 0 || !this.renderable)
     {
         return;
     }
@@ -523,7 +613,7 @@ Container.prototype.renderWebGL = function (renderer)
         // push filter first as we need to ensure the stencil buffer is correct for any masking
         if (this._filters && this._filters.length)
         {
-            renderer.filterManager.pushFilter(this, this._filters, this._filterBlendMode);
+            renderer.filterManager.pushFilter(this, this._filters);
         }
 
         if (this._mask)
@@ -623,17 +713,20 @@ Container.prototype.renderCanvas = function (renderer)
 
 /**
  * Destroys the container
- * @param [destroyChildren=false] {boolean} if set to true, all the children will have their destroy method called as well
+ * @param [options] {object|boolean} Options parameter. A boolean will act as if all options have been set to that value
+ * @param [options.children=false] {boolean} if set to true, all the children will have their destroy
+ *      method called as well. 'options' will be passed on to those calls.
  */
-Container.prototype.destroy = function (destroyChildren)
+Container.prototype.destroy = function (options)
 {
     DisplayObject.prototype.destroy.call(this);
 
+    var destroyChildren = typeof options === 'boolean' ? options : options && options.children;
     if (destroyChildren)
     {
         for (var i = 0, j = this.children.length; i < j; ++i)
         {
-            this.children[i].destroy(destroyChildren);
+            this.children[i].destroy(options);
         }
     }
 

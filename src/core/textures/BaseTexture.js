@@ -1,15 +1,17 @@
 var utils = require('../utils'),
     CONST = require('../const'),
-    EventEmitter = require('eventemitter3');
+    EventEmitter = require('eventemitter3'),
+    determineCrossOrigin = require('../utils/determineCrossOrigin'),
+    bitTwiddle = require('bit-twiddle');
 
 /**
  * A texture stores the information that represents an image. All textures have a base texture.
  *
  * @class
  * @memberof PIXI
- * @param source {Image|Canvas} the source object of the texture.
+ * @param [source ]{Image|HTMLCanvasElement} the source object of the texture.
  * @param [scaleMode=PIXI.SCALE_MODES.DEFAULT] {number} See {@link PIXI.SCALE_MODES} for possible values
- * @param resolution {number} the resolution of the texture for devices with different pixel ratios
+ * @param [resolution=CONST.resolution] {number} the resolution of the texture for devices with different pixel ratios
  */
 function BaseTexture(source, scaleMode, resolution)
 {
@@ -17,12 +19,14 @@ function BaseTexture(source, scaleMode, resolution)
 
     this.uid = utils.uid();
 
+    this.touched = 0;
+
     /**
      * The Resolution of the texture.
      *
      * @member {number}
      */
-    this.resolution = resolution || 1;
+    this.resolution = resolution || CONST.RESOLUTION;
 
     /**
      * The width of the base texture set when the image has loaded
@@ -93,7 +97,7 @@ function BaseTexture(source, scaleMode, resolution)
      *
      * TODO: Make this a setter that calls loadSource();
      *
-     * @member {Image|Canvas}
+     * @member {Image|HTMLCanvasElement}
      * @readonly
      */
     this.source = null; // set in loadSource, if at all
@@ -128,7 +132,15 @@ function BaseTexture(source, scaleMode, resolution)
      *
      * @member {boolean}
      */
-    this.mipmap = false;
+    this.mipmap = CONST.MIPMAP_TEXTURES;
+
+    /**
+     *
+     * WebGL Texture wrap mode
+     *
+     * @member {boolean}
+     */
+    this.wrapMode = CONST.WRAP_MODES.DEFAULT;
 
     /**
      * A map of renderer IDs to webgl textures
@@ -136,7 +148,9 @@ function BaseTexture(source, scaleMode, resolution)
      * @member {object<number, WebGLTexture>}
      * @private
      */
-    this._glTextures = {};
+    this._glTextures = [];
+    this._enabled = 0;
+    this._id = 0;
 
     // if no source passed don't try to load
     if (source)
@@ -172,13 +186,13 @@ module.exports = BaseTexture;
  */
 BaseTexture.prototype.update = function ()
 {
-    this.realWidth = this.source.naturalWidth || this.source.width;
-    this.realHeight = this.source.naturalHeight || this.source.height;
+    this.realWidth = this.source.naturalWidth || this.source.videoWidth || this.source.width;
+    this.realHeight = this.source.naturalHeight || this.source.videoHeight || this.source.height;
 
     this.width = this.realWidth / this.resolution;
     this.height = this.realHeight / this.resolution;
 
-    this.isPowerOfTwo = utils.isPowerOfTwo(this.realWidth, this.realHeight);
+    this.isPowerOfTwo = bitTwiddle.isPow2(this.realWidth) && bitTwiddle.isPow2(this.realHeight);
 
     this.emit('update', this);
 };
@@ -204,7 +218,7 @@ BaseTexture.prototype.update = function ()
  *     }
  *
  * @protected
- * @param source {Image|Canvas} the source object of the texture.
+ * @param source {Image|HTMLCanvasElement} the source object of the texture.
  */
 BaseTexture.prototype.loadSource = function (source)
 {
@@ -378,19 +392,16 @@ BaseTexture.fromImage = function (imageUrl, crossorigin, scaleMode)
 {
     var baseTexture = utils.BaseTextureCache[imageUrl];
 
-    if (crossorigin === undefined && imageUrl.indexOf('data:') !== 0)
-    {
-        crossorigin = true;
-    }
-
     if (!baseTexture)
     {
         // new Image() breaks tex loading in some versions of Chrome.
         // See https://code.google.com/p/chromium/issues/detail?id=238071
         var image = new Image();//document.createElement('img');
-        if (crossorigin)
+
+
+        if (crossorigin === undefined && imageUrl.indexOf('data:') !== 0)
         {
-            image.crossOrigin = '';
+            image.crossOrigin = determineCrossOrigin(imageUrl);
         }
 
         baseTexture = new BaseTexture(image, scaleMode);
@@ -411,7 +422,7 @@ BaseTexture.fromImage = function (imageUrl, crossorigin, scaleMode)
  * Helper function that creates a base texture from the given canvas element.
  *
  * @static
- * @param canvas {Canvas} The canvas element source of the texture
+ * @param canvas {HTMLCanvasElement} The canvas element source of the texture
  * @param scaleMode {number} See {@link PIXI.SCALE_MODES} for possible values
  * @return PIXI.BaseTexture
  */

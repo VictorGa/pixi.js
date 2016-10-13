@@ -51,6 +51,7 @@ function Matrix()
      * @default 0
      */
     this.ty = 0;
+
 }
 
 Matrix.prototype.constructor = Matrix;
@@ -108,7 +109,7 @@ Matrix.prototype.set = function (a, b, c, d, tx, ty)
  * Creates an array from the current Matrix object.
  *
  * @param transpose {boolean} Whether we need to transpose the matrix or not
- * @param [out] {Array} If provided the array will be assigned to out
+ * @param [out=Float32Array[]} If provided the array will be assigned to out
  * @return {number[]} the newly created array which contains the matrix
  */
 Matrix.prototype.toArray = function (transpose, out)
@@ -146,6 +147,57 @@ Matrix.prototype.toArray = function (transpose, out)
     }
 
     return array;
+};
+
+Matrix.prototype.toMat4 = function(out) {
+    out = out || new Float32Array(16);
+    out[0] = this.a;
+    out[1] = this.b;
+    out[2] = 0;
+    out[3] = 0;
+    out[4] = this.c;
+    out[5] = this.d;
+    out[6] = 0;
+    out[7] = 0;
+    out[8] = 0;
+    out[9] = 0;
+    out[10] = 1;
+    out[11] = 0;
+    out[12] = this.tx;
+    out[13] = this.ty;
+    out[14] = 0;
+    out[15] = 1;
+    return out;
+};
+
+Matrix.prototype.invertMat4 = function(out)
+{
+    out = out || new Float32Array(16);
+    var a1 = this.a;
+    var b1 = this.b;
+    var c1 = this.c;
+    var d1 = this.d;
+    var tx1 = this.tx;
+    var n = a1*d1-b1*c1;
+
+    out[0] = d1/n;
+    out[1] = -b1/n;
+    out[2] = 0;
+    out[3] = 0;
+    out[4] = -c1/n;
+    out[5] = a1/n;
+    out[6] = 0;
+    out[7] = 0;
+    out[8] = 0;
+    out[9] = 0;
+    out[10] = 1;
+    out[11] = 0;
+    out[12] = (c1*this.ty-d1*tx1)/n;
+    out[13] = -(a1*this.ty-b1*tx1)/n;
+    out[14] = 0;
+    out[15] = 1;
+
+    return this;
 };
 
 /**
@@ -343,6 +395,54 @@ Matrix.prototype.prepend = function(matrix)
 
     return this;
 };
+
+/**
+ * Decomposes the matrix (x, y, scaleX, scaleY, and rotation) and sets the properties on to a transform.
+ * @param {Transform} the transform to apply the properties to.
+ * @return {Transform} The transform with the newly applied properies
+*/
+Matrix.prototype.decompose = function(transform)
+{
+    // sort out rotation / skew..
+    var a = this.a,
+        b = this.b,
+        c = this.c,
+        d = this.d;
+
+    var skewX = Math.atan2(-c, d);
+    var skewY = Math.atan2(b, a);
+
+    var delta = Math.abs(1-skewX/skewY);
+
+    if (delta < 0.00001)
+    {
+        transform.rotation = skewY;
+
+        if (a < 0 && d >= 0)
+        {
+            transform.rotation += (transform.rotation <= 0) ? Math.PI : -Math.PI;
+        }
+
+        transform.skew.x = transform.skew.y = 0;
+
+    }
+    else
+    {
+        transform.skew.x = skewX;
+        transform.skew.y = skewY;
+    }
+
+    // next set scale
+    transform.scale.x = Math.sqrt(a * a + b * b);
+    transform.scale.y = Math.sqrt(c * c + d * d);
+
+    // next set position
+    transform.position.x = this.tx;
+    transform.position.y = this.ty;
+
+    return transform;
+};
+
 
 /**
  * Inverts this matrix

@@ -1,10 +1,9 @@
 var math = require('../math'),
-    RenderTexture = require('../textures/RenderTexture'),
     EventEmitter = require('eventemitter3'),
-    CONST = require('../const'),
-    _tempMatrix = new math.Matrix(),
-    _tempDisplayObjectParent = {worldTransform:new math.Matrix(), worldAlpha:1, children:[]};
-
+    Transform2d = require('../c2d/Transform2d'),
+    ComputedTransform2d = require('../c2d/ComputedTransform2d'),
+    utils = require('../utils'),
+    _tempDisplayObjectParent = null;
 
 /**
  * The base class for all objects that are rendered on the screen.
@@ -12,6 +11,7 @@ var math = require('../math'),
  *
  * @class
  * @extends EventEmitter
+ * @mixes PIXI.interaction.interactiveTarget
  * @memberof PIXI
  */
 function DisplayObject()
@@ -19,40 +19,62 @@ function DisplayObject()
     EventEmitter.call(this);
 
     /**
-     * The coordinate of the object relative to the local coordinates of the parent.
-     *
-     * @member {PIXI.Point}
+     * DisplayObject uid, for making a map out of it
+     * @member {null}
      */
-    this.position = new math.Point();
+    this.uid = utils.incDisplayObject();
 
     /**
-     * The scale factor of the object.
-     *
-     * @member {PIXI.Point}
+     * Local transform
+     * @member {PIXI.Transform2d}
      */
-    this.scale = new math.Point(1, 1);
+    this.transform = null;
 
     /**
-     * The pivot point of the displayObject that it rotates around
-     *
-     * @member {PIXI.Point}
+     * World transform
+     * @type {PIXI.Transform2d}
      */
-    this.pivot = new math.Point(0, 0);
-
+    this.computedTransform = null;
 
     /**
-     * The skew factor for the object in radians.
-     *
-     * @member {PIXI.Point}
+     * Projected transform, need for canvas mode
+     * @type {PIXI.Transform2d}
      */
-    this.skew = new math.Point(0, 0);
+    this.projectedTransform = null;
 
     /**
-     * The rotation of the object in radians.
-     *
-     * @member {number}
+     * World projection, for camera
+     * @type {PIXI.Transform2d}
      */
-    this.rotation = 0;
+    this.worldProjection = null;
+
+    /**
+     * Local geometry, for sprites and meshes
+     *
+     * @member {PIXI.Geometry2d}
+     */
+    this.geometry = null;
+
+    /**
+     * Geometry transformed to world coordinates
+     *
+     * @member {PIXI.ComputedGeometry2d}
+     */
+    this.computedGeometry = null;
+
+    /**
+     * Geometry transformed to projected coordinates
+     *
+     * @member {PIXI.ComputedGeometry2d}
+     */
+    this.projectedGeometry = null;
+
+    /**
+     * Local geometry special for fast calculation of bounds
+     *
+     * @member {PIXI.GeometrySet}
+     */
+    this._localBounds = null;
 
     /**
      * The opacity of the object.
@@ -94,36 +116,22 @@ function DisplayObject()
     this.worldAlpha = 1;
 
     /**
-     * Current transform of the object based on world (parent) factors
-     *
-     * @member {PIXI.Matrix}
-     * @readOnly
-     */
-    this.worldTransform = new math.Matrix();
-
-    /**
      * The area the filter is applied to. This is used as more of an optimisation
      * rather than figuring out the dimensions of the displayObject each frame you can set this rectangle
+     *
+     * Also works as an interaction mask
      *
      * @member {PIXI.Rectangle}
      */
     this.filterArea = null;
 
     /**
-     * cached sin rotation
+     * The original, cached computed bounds of the object
      *
-     * @member {number}
+     * @member {PIXI.Rectangle}
      * @private
      */
-    this._sr = 0;
-
-    /**
-     * cached cos rotation
-     *
-     * @member {number}
-     * @private
-     */
-    this._cr = 1;
+    this._computedBounds = new math.Rectangle(0, 0, 1, 1);
 
     /**
      * The original, cached bounds of the object
@@ -134,12 +142,32 @@ function DisplayObject()
     this._bounds = new math.Rectangle(0, 0, 1, 1);
 
     /**
-     * The most up-to-date bounds of the object
+     * The most up-to-date projected bounds of the object
      *
      * @member {PIXI.Rectangle}
      * @private
      */
     this._currentBounds = null;
+
+    /**
+     * The most up-to-date computed bounds of the object
+     *
+     * @member {PIXI.Rectangle}
+     * @private
+     */
+    this._currentComputedBounds = null;
+
+    /**
+     * Whether we have to check our bounds before raycasting this thing
+     * @type {boolean}
+     */
+    this.isRaycastCheckingBoundsFirst = false;
+
+    /**
+     * Whether we can raycast it
+     * @type {boolean}
+     */
+    this.isRaycastPossible = false;
 
     /**
      * The original, cached mask of the object
@@ -148,6 +176,61 @@ function DisplayObject()
      * @private
      */
     this._mask = null;
+
+    /**
+     * At rendering stage, if some proxy swapped its context to ours, then we can read the original context here
+     * @member {PIXI.DisplayObjectProxy}
+     */
+    this.proxyContext = null;
+
+    /**
+     * Order in updateTransform
+     * @member {number}
+     */
+    this.updateOrder = 0;
+
+    /**
+     * Order in displayList of camera
+     * @member {number}
+     */
+    this.displayOrder = 0;
+
+    /**
+     * Temporary variable used by camera
+     * @type {number}
+     */
+    this.displayFlag = 0;
+
+    /**
+     * if object has zIndex, it will be used for display ordering
+     * @member {boolean}
+     */
+    this.inheritZIndex = true;
+
+    /**
+     * one time flag for reading transform from parent
+     * need for Cameras and stuff
+     * @type {boolean}
+     */
+    this.dontInheritTransform = false;
+
+    /**
+     * z-index is used for display ordering
+     * You MUST specify camera.enableDisplayList=true for this to work
+     * Two objects with same z-index will be sorted in zOrder and then in display order
+     * @member {number}
+     * @private
+     */
+    this._zIndex = 0;
+
+    /**
+     * z-order is used for display ordering
+     * Two objects with same z-index will be sorted by zOrder and then by updateOrder
+     * @member {number}
+     */
+    this.zOrder = 0;
+
+    this.initTransform(true);
 }
 
 // constructor
@@ -155,7 +238,25 @@ DisplayObject.prototype = Object.create(EventEmitter.prototype);
 DisplayObject.prototype.constructor = DisplayObject;
 module.exports = DisplayObject;
 
+
 Object.defineProperties(DisplayObject.prototype, {
+    /**
+     * z-index is used for display ordering
+     * You MUST specify it in your camera too, otherwise it wont work
+     * Two objects with same z-index will be sorted in zOrder and then in display order
+     * @member {number}
+     * @memberof PIXI.DisplayObject#
+     */
+    zIndex: {
+        get: function() {
+            return this._zIndex;
+        },
+        set: function(value) {
+            this._zIndex = value;
+            this.inheritZIndex = false;
+        }
+    },
+
     /**
      * The position of the displayObject on the x axis relative to the local coordinates of the parent.
      *
@@ -165,11 +266,11 @@ Object.defineProperties(DisplayObject.prototype, {
     x: {
         get: function ()
         {
-            return this.position.x;
+            return this.transform.position.x;
         },
         set: function (value)
         {
-            this.position.x = value;
+            this.transform.position.x = value;
         }
     },
 
@@ -182,11 +283,125 @@ Object.defineProperties(DisplayObject.prototype, {
     y: {
         get: function ()
         {
-            return this.position.y;
+            return this.transform.position.y;
         },
         set: function (value)
         {
-            this.position.y = value;
+            this.transform.position.y = value;
+        }
+    },
+
+    /**
+     * Current transform of the object based on world (parent) factors
+     * This thing will work in 3d too
+     *
+     * @member {PIXI.Matrix}
+     * @readOnly
+     */
+    projectionMatrix: {
+        get: function ()
+        {
+            return this.updateProjectedTransform().matrix;
+        }
+    },
+
+    /**
+     * Current transform of the object based on world (parent) factors
+     * Its a legacy function
+     *
+     * @member {PIXI.Matrix}
+     * @readOnly
+     */
+    projectionMatrix2d: {
+        get: function ()
+        {
+            return this.updateProjectedTransform().matrix2d;
+        }
+    },
+
+    /**
+     * Current transform of the object based on local factors: position, scale, other stuff
+     *
+     * @member {PIXI.Matrix}
+     * @readOnly
+     */
+    localTransform: {
+        get: function ()
+        {
+            return this.transform.matrix;
+        }
+    },
+
+    /**
+     * The coordinate of the object relative to the local coordinates of the parent.
+     *
+     * @member {PIXI.Point}
+     */
+    position: {
+        get: function()
+        {
+            return this.transform.position;
+        },
+        set: function(value) {
+            this.transform.position.copy(value);
+        }
+    },
+
+    /**
+     * The scale factor of the object.
+     *
+     * @member {PIXI.Point}
+     */
+    scale: {
+        get: function() {
+            return this.transform.scale;
+        },
+        set: function(value) {
+            this.transform.scale.copy(value);
+        }
+    },
+
+    /**
+     * The pivot point of the displayObject that it rotates around
+     *
+     * @member {PIXI.Point}
+     */
+    pivot: {
+        get: function() {
+            return this.transform.pivot;
+        },
+        set: function(value) {
+            this.transform.pivot.copy(value);
+        }
+    },
+
+    /**
+     * The skew factor for the object in radians.
+     *
+     * @member {PIXI.Point}
+     */
+    skew: {
+        get: function() {
+            return this.transform.skew;
+        },
+        set: function(value) {
+            this.transform.skew.copy(value);
+        }
+    },
+
+    /**
+     * The rotation of the object in radians.
+     *
+     * @member {number}
+     */
+    rotation: {
+        get: function ()
+        {
+            return this.transform.rotation;
+        },
+        set: function (value)
+        {
+            this.transform.rotation = value;
         }
     },
 
@@ -212,6 +427,20 @@ Object.defineProperties(DisplayObject.prototype, {
             } while (item);
 
             return true;
+        }
+    },
+
+    /**
+     * Legacy 2d matrix
+     *
+     * @member {boolean}
+     * @memberof PIXI.DisplayObject#
+     * @readonly
+     */
+    worldTransform: {
+        get: function ()
+        {
+            return this.transform.matrix2d;
         }
     },
 
@@ -263,26 +492,20 @@ Object.defineProperties(DisplayObject.prototype, {
         {
             this._filters = value && value.slice();
         }
-    },
-
-    /**
-     * Sets the filterBlendMode for displayObject
-     * * IMPORTANT: This is a webGL only feature and will be ignored by the canvas renderer.
-     *
-     * @member {boolean}
-     * @memberof PIXI.DisplayObject#
-     */
-    filterBlendMode: {
-        get: function ()
-        {
-            return this._filterBlendMode || false;
-        },
-        set: function (value)
-        {
-            this._filterBlendMode = value;
-        }
     }
+
 });
+
+/**
+ * initialize or change transforms here.
+ * @param isStatic use static optimizations. Set "false" for particles
+ */
+DisplayObject.prototype.initTransform = function(isStatic) {
+    this.transform = new Transform2d(isStatic);
+    this.computedTransform = new ComputedTransform2d();
+};
+
+DisplayObject.prototype.displayObjectInitTransform = DisplayObject.prototype.initTransform;
 
 /*
  * Updates the object transform for rendering
@@ -291,97 +514,67 @@ Object.defineProperties(DisplayObject.prototype, {
  */
 DisplayObject.prototype.updateTransform = function ()
 {
-    // create some matrix refs for easy access
-    var pt = this.parent.worldTransform;
-    var wt = this.worldTransform;
-
-    // temporary matrix variables
-    var a, b, c, d, tx, ty;
-
-    // looks like we are skewing
-    if(this.skew.x || this.skew.y)
-    {
-        // I'm assuming that skewing is not going to be very common
-        // With that in mind, we can do a full setTransform using the temp matrix
-        _tempMatrix.setTransform(
-            this.position.x,
-            this.position.y,
-            this.pivot.x,
-            this.pivot.y,
-            this.scale.x,
-            this.scale.y,
-            this.rotation,
-            this.skew.x,
-            this.skew.y
-        );
-
-        // now concat the matrix (inlined so that we can avoid using copy)
-        wt.a  = _tempMatrix.a  * pt.a + _tempMatrix.b  * pt.c;
-        wt.b  = _tempMatrix.a  * pt.b + _tempMatrix.b  * pt.d;
-        wt.c  = _tempMatrix.c  * pt.a + _tempMatrix.d  * pt.c;
-        wt.d  = _tempMatrix.c  * pt.b + _tempMatrix.d  * pt.d;
-        wt.tx = _tempMatrix.tx * pt.a + _tempMatrix.ty * pt.c + pt.tx;
-        wt.ty = _tempMatrix.tx * pt.b + _tempMatrix.ty * pt.d + pt.ty;
-    }
-    else
-    {
-        // so if rotation is between 0 then we can simplify the multiplication process...
-        if (this.rotation % CONST.PI_2)
-        {
-            // check to see if the rotation is the same as the previous render. This means we only need to use sin and cos when rotation actually changes
-            if (this.rotation !== this.rotationCache)
-            {
-                this.rotationCache = this.rotation;
-                this._sr = Math.sin(this.rotation);
-                this._cr = Math.cos(this.rotation);
-            }
-
-            // get the matrix values of the displayobject based on its transform properties..
-            a  =  this._cr * this.scale.x;
-            b  =  this._sr * this.scale.x;
-            c  = -this._sr * this.scale.y;
-            d  =  this._cr * this.scale.y;
-            tx =  this.position.x;
-            ty =  this.position.y;
-
-            // check for pivot.. not often used so geared towards that fact!
-            if (this.pivot.x || this.pivot.y)
-            {
-                tx -= this.pivot.x * a + this.pivot.y * c;
-                ty -= this.pivot.x * b + this.pivot.y * d;
-            }
-
-            // concat the parent matrix with the objects transform.
-            wt.a  = a  * pt.a + b  * pt.c;
-            wt.b  = a  * pt.b + b  * pt.d;
-            wt.c  = c  * pt.a + d  * pt.c;
-            wt.d  = c  * pt.b + d  * pt.d;
-            wt.tx = tx * pt.a + ty * pt.c + pt.tx;
-            wt.ty = tx * pt.b + ty * pt.d + pt.ty;
-        }
-        else
-        {
-            // lets do the fast version as we know there is no rotation..
-            a  = this.scale.x;
-            d  = this.scale.y;
-
-            tx = this.position.x - this.pivot.x * a;
-            ty = this.position.y - this.pivot.y * d;
-
-            wt.a  = a  * pt.a;
-            wt.b  = a  * pt.b;
-            wt.c  = d  * pt.c;
-            wt.d  = d  * pt.d;
-            wt.tx = tx * pt.a + ty * pt.c + pt.tx;
-            wt.ty = tx * pt.b + ty * pt.d + pt.ty;
-        }
-    }
-
-    // multiply the alphas..
-    this.worldAlpha = this.alpha * this.parent.worldAlpha;
-
-    // reset the bounds each time this is called!
+    this.updateOrder = utils.incUpdateOrder();
+    this.displayOrder = 0;
     this._currentBounds = null;
+    this._currentComputedBounds = null;
+    // multiply the alphas..
+    if (this.parent) {
+        //projection attributes
+        this.worldAlpha = this.alpha * this.parent.worldAlpha;
+        this.worldProjection = this.parent.worldProjection;
+    } else {
+        this.worldAlpha = this.alpha;
+        this.worldProjection = null;
+    }
+    this.transform.update();
+    if (this.dontInheritTransform) {
+        this.dontInheritTransform = false;
+        this.computedTransform = this.transform.updateSingleChild(this.computedTransform);
+    } else {
+        this.computedTransform = this.parent.computedTransform.updateChildTransform(this.computedTransform, this.transform);
+    }
+    return this.computedTransform;
+};
+
+/**
+ * Updates the object geometry. Assume that geometry actually exist.
+ * @returns {*}
+ */
+DisplayObject.prototype.updateGeometry = function ()
+{
+    this.computedGeometry = this.computedTransform.updateChildGeometry(this.computedGeometry, this.geometry);
+    return this.computedGeometry;
+};
+
+/**
+ * Updates the object geometry. Assume that geometry actually exist.
+ * @returns {*}
+ */
+DisplayObject.prototype.updateProjectedGeometry = function ()
+{
+    this.computedGeometry = this.computedTransform.updateChildGeometry(this.computedGeometry, this.geometry);
+    if (this.worldProjection && this.computedGeometry) {
+        //TODO: in some cases its better to use projectedTransform, for example if mesh is too big
+        this.projectedGeometry = this.worldProjection.updateChildGeometry(this.projectedGeometry, this.computedGeometry);
+        return this.projectedGeometry;
+    }
+    this.projectedGeometry = null;
+    return this.computedGeometry;
+};
+
+/**
+ * Updates projection matrix. Used by interaction manager and canvas renderer, throught legacy property worldTransform
+ *
+ * @returns {PIXI.Transform2d} Projected or computed transform
+ */
+DisplayObject.prototype.updateProjectedTransform = function() {
+    var wp = this.worldProjection;
+    if (wp) {
+        this.projectedTransform = wp.updateChildTransform(this.projectedTransform || new ComputedTransform2d(), this.computedTransform);
+        return this.projectedTransform;
+    }
+    return this.computedTransform;
 };
 
 // performance increase to avoid using call.. (10x faster)
@@ -389,15 +582,47 @@ DisplayObject.prototype.displayObjectUpdateTransform = DisplayObject.prototype.u
 
 /**
  *
- *
- * Retrieves the bounds of the displayObject as a rectangle object
+ * Retrieves the computed bounds of the displayObject as a rectangle object
  *
  * @param matrix {PIXI.Matrix}
  * @return {PIXI.Rectangle} the rectangular bounding area
  */
-DisplayObject.prototype.getBounds = function (matrix) // jshint unused:false
+DisplayObject.prototype.getComputedBounds = function () // jshint unused:false
 {
-    return math.Rectangle.EMPTY;
+    if (this._localBounds) {
+        return this._localBounds.getComputedBounds(this.computedTransform);
+    }
+    if (!this._currentComputedBounds) {
+        var geom = this.updateGeometry();
+        if (!geom || !geom.valid) {
+            return math.Rectangle.EMPTY;
+        }
+        this._currentComputedBounds = geom.getBounds();
+    }
+    return this._currentComputedBounds;
+};
+
+/**
+ *
+ * Retrieves the projected bounds of the displayObject as a rectangle object
+ *
+ * @param matrix {PIXI.Matrix}
+ * @return {PIXI.Rectangle} the rectangular bounding area
+ */
+DisplayObject.prototype.getBounds = function () // jshint unused:false
+{
+    if (this._localBounds) {
+        return this._localBounds.getBounds(this.computedTransform, this.projectedTransform);
+    }
+
+    var geom = this.updateProjectedGeometry();
+    if (!geom || !geom.valid) {
+        return math.Rectangle.EMPTY;
+    }
+    if (!this._currentBounds) {
+        this._currentBounds = geom.getBounds();
+    }
+    return this._currentBounds;
 };
 
 /**
@@ -407,7 +632,15 @@ DisplayObject.prototype.getBounds = function (matrix) // jshint unused:false
  */
 DisplayObject.prototype.getLocalBounds = function ()
 {
-    return this.getBounds(math.Matrix.IDENTITY);
+    if (this._localBounds) {
+        return this._localBounds.getBounds(this.computedTransform, this.worldProjection);
+    }
+
+    var geom = this.geometry;
+    if (!geom) {
+        return math.Rectangle.EMPTY;
+    }
+    return geom.getBounds();
 };
 
 /**
@@ -433,7 +666,7 @@ DisplayObject.prototype.toGlobal = function (position)
     }
 
     // don't need to update the lot
-    return this.worldTransform.apply(position);
+    return this.projectionMatrix.apply(position);
 };
 
 /**
@@ -466,7 +699,42 @@ DisplayObject.prototype.toLocal = function (position, from, point)
     }
 
     // simply apply the matrix..
-    return this.worldTransform.applyInverse(position, point);
+    return this.projectionMatrix.applyInverse(position, point);
+};
+
+/**
+ *
+ * @param {PIXI.DisplayPoint} point
+ * @param {boolean} ignoreBoundsCheck Ignore bounds check
+ * @returns {PIXI.Raycast2d} raycast result. Can be null. Can be not valid. MUTABLE OBJECT, DO NOT CHANGE!
+ */
+DisplayObject.prototype.raycast = function(point, ignoreBoundsCheck) {
+    if (!ignoreBoundsCheck && !this.hitArea && this.isRaycastCheckingBoundsFirst && !this.getBounds().contains(point.x, point.y)) {
+        return null;
+    }
+    if (this.worldProjection) {
+        point = this.worldProjection.updateRaycast( point );
+    }
+    point = this.computedTransform.updateRaycast( point );
+    if (point && point.valid) {
+        point.intersects = this.hitArea ? this.hitArea.contains( point.x, point.y ) : this.containsLocalPoint( point );
+    }
+    return point;
+};
+
+DisplayObject.prototype.containsPoint = function(point) {
+    var rc = this.raycast(point);
+    return rc && rc.valid && rc.intersects;
+};
+
+/**
+ * Interaction local point
+ * @param point
+ * @returns {boolean}
+ */
+DisplayObject.prototype.containsLocalPoint = function() {
+    //NOPE
+    return false;
 };
 
 /**
@@ -489,28 +757,6 @@ DisplayObject.prototype.renderWebGL = function (renderer) // jshint unused:false
 DisplayObject.prototype.renderCanvas = function (renderer) // jshint unused:false
 {
     // OVERWRITE;
-};
-/**
- * Useful function that returns a texture of the display object that can then be used to create sprites
- * This can be quite useful if your displayObject is static / complicated and needs to be reused multiple times.
- *
- * @param renderer {PIXI.CanvasRenderer|PIXI.WebGLRenderer} The renderer used to generate the texture.
- * @param scaleMode {number} See {@link PIXI.SCALE_MODES} for possible values
- * @param resolution {number} The resolution of the texture being generated
- * @return {PIXI.Texture} a texture of the display object
- */
-DisplayObject.prototype.generateTexture = function (renderer, scaleMode, resolution)
-{
-    var bounds = this.getLocalBounds();
-
-    var renderTexture = new RenderTexture(renderer, bounds.width | 0, bounds.height | 0, scaleMode, resolution);
-
-    _tempMatrix.tx = -bounds.x;
-    _tempMatrix.ty = -bounds.y;
-
-    renderTexture.render(this, _tempMatrix);
-
-    return renderTexture;
 };
 
 /**
@@ -564,18 +810,19 @@ DisplayObject.prototype.setTransform = function(x, y, scaleX, scaleY, rotation, 
  */
 DisplayObject.prototype.destroy = function ()
 {
-
-    this.position = null;
-    this.scale = null;
-    this.pivot = null;
-    this.skew = null;
-
+    this.transform.destroy();
     this.parent = null;
 
     this._bounds = null;
     this._currentBounds = null;
     this._mask = null;
 
-    this.worldTransform = null;
+    this.transform = null;
+    this.computedTransform = null;
+    this.projectedTransform = null;
+    this.projection = null;
+    this.worldProjection = null;
     this.filterArea = null;
 };
+
+_tempDisplayObjectParent = new DisplayObject();

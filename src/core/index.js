@@ -9,56 +9,63 @@
  * @namespace PIXI
  */
 // export core and const. We assign core to const so that the non-reference types in const remain in-tact
-var core = module.exports = Object.assign(require('./const'), require('./math'), {
+var core = module.exports = Object.assign(require('./const'), require('./math'), require('./c2d'), require('./c3d'), {
     // utils
     utils: require('./utils'),
     ticker: require('./ticker'),
 
     // display
     DisplayObject:          require('./display/DisplayObject'),
+    ObservablePoint:        require('./display/ObservablePoint'),
     Container:              require('./display/Container'),
+    Camera2d:               require('./display/Camera2d'),
+    DisplayObjectProxy:     require('./display/DisplayObjectProxy'),
+    ContainerProxy:         require('./display/ContainerProxy'),
+    CameraProxy:         require('./display/CameraProxy'),
 
     // sprites
     Sprite:                 require('./sprites/Sprite'),
-    ParticleContainer:      require('./particles/ParticleContainer'),
+    SpriteFrame:            require('./sprites/SpriteFrame'),
+    CanvasSpriteRender:     require('./sprites/canvas/CanvasSpriteRenderer'),
+    CanvasTinter:           require('./sprites/canvas/CanvasTinter'),
     SpriteRenderer:         require('./sprites/webgl/SpriteRenderer'),
-    ParticleRenderer:       require('./particles/webgl/ParticleRenderer'),
 
     // text
     Text:                   require('./text/Text'),
-
+    TextStyle:              require('./text/TextStyle'),
     // primitives
     Graphics:               require('./graphics/Graphics'),
     GraphicsData:           require('./graphics/GraphicsData'),
     GraphicsRenderer:       require('./graphics/webgl/GraphicsRenderer'),
+    CanvasGraphicsRenderer: require('./graphics/canvas/CanvasGraphicsRenderer'),
 
     // textures
     Texture:                require('./textures/Texture'),
+    ObservableRect:         require('./textures/ObservableRect'),
+    DoubleRect:             require('./textures/DoubleRect'),
     BaseTexture:            require('./textures/BaseTexture'),
     RenderTexture:          require('./textures/RenderTexture'),
+    BaseRenderTexture:      require('./textures/BaseRenderTexture'),
     VideoBaseTexture:       require('./textures/VideoBaseTexture'),
     TextureUvs:             require('./textures/TextureUvs'),
 
     // renderers - canvas
     CanvasRenderer:         require('./renderers/canvas/CanvasRenderer'),
-    CanvasGraphics:         require('./renderers/canvas/utils/CanvasGraphics'),
-    CanvasBuffer:           require('./renderers/canvas/utils/CanvasBuffer'),
+    CanvasRenderTarget:     require('./renderers/canvas/utils/CanvasRenderTarget'),
 
     // renderers - webgl
+    Shader:                 require('./Shader'),
     WebGLRenderer:          require('./renderers/webgl/WebGLRenderer'),
     WebGLManager:           require('./renderers/webgl/managers/WebGLManager'),
-    ShaderManager:          require('./renderers/webgl/managers/ShaderManager'),
-    Shader:                 require('./renderers/webgl/shaders/Shader'),
-    TextureShader:          require('./renderers/webgl/shaders/TextureShader'),
-    PrimitiveShader:        require('./renderers/webgl/shaders/PrimitiveShader'),
-    ComplexPrimitiveShader: require('./renderers/webgl/shaders/ComplexPrimitiveShader'),
     ObjectRenderer:         require('./renderers/webgl/utils/ObjectRenderer'),
     RenderTarget:           require('./renderers/webgl/utils/RenderTarget'),
+    Quad:                   require('./renderers/webgl/utils/Quad'),
 
     // filters - webgl
-    AbstractFilter:         require('./renderers/webgl/filters/AbstractFilter'),
-    FXAAFilter:             require('./renderers/webgl/filters/FXAAFilter'),
-    SpriteMaskFilter:       require('./renderers/webgl/filters/SpriteMaskFilter'),
+    SpriteMaskFilter:       require('./renderers/webgl/filters/spriteMask/SpriteMaskFilter'),
+    Filter:                 require('./renderers/webgl/filters/Filter'),
+
+    glCore:                   require('pixi-gl-core'),
 
     /**
      * This helper function will automatically detect which renderer you should be using.

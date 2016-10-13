@@ -1,22 +1,19 @@
-precision mediump float;
-
 varying vec2 vMapCoord;
 varying vec2 vTextureCoord;
-varying vec4 vColor;
 
 uniform vec2 scale;
 
 uniform sampler2D uSampler;
 uniform sampler2D mapSampler;
 
+uniform vec4 filterClamp;
+
 void main(void)
 {
-    vec4 original =  texture2D(uSampler, vTextureCoord);
-    vec4 map =  texture2D(mapSampler, vMapCoord);
-    
-    map -= 0.5;
-    map.xy *= scale;
-    
-    gl_FragColor = texture2D(uSampler, vec2(vTextureCoord.x + map.x, vTextureCoord.y + map.y));
+   vec4 map =  texture2D(mapSampler, vMapCoord);
 
+   map -= 0.5;
+   map.xy *= scale;
+
+   gl_FragColor = texture2D(uSampler, clamp(vec2(vTextureCoord.x + map.x, vTextureCoord.y + map.y), filterClamp.xy, filterClamp.zw));
 }

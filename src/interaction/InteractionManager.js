@@ -7,6 +7,11 @@ Object.assign(
     require('./interactiveTarget')
 );
 
+Object.defineProperties(
+    core.DisplayObjectProxy.prototype,
+    require('./interactiveTargetProxy')
+);
+
 /**
  * The interaction manager deals with mouse and touch events. Any DisplayObject can be interactive
  * if its interactive parameter is set to true
@@ -87,11 +92,12 @@ function InteractionManager(renderer, options)
      * This property determins if mousemove and touchmove events are fired only when the cursror is over the object
      * Setting to true will make things work more in line with how the DOM verison works.
      * Setting to false can make things easier for things like dragging
+     * It is currently set to false as this is how pixi used to work. This will be set to true in future versions of pixi.
      * @member {boolean}
      * @private
      */
-    this.moveWhenInside = true;
-    
+    this.moveWhenInside = false;
+
     /**
      * Have events been attached to the dom element?
      *
@@ -152,6 +158,13 @@ function InteractionManager(renderer, options)
     this.last = 0;
 
     /**
+     * Every update cursor will be reset to this value, if some element wont override it in its hitTest
+     * @member {string}
+     * @default "inherit"
+     */
+    this.defaultCursorStyle = 'inherit';
+
+    /**
      * The css style of the cursor that is being used
      * @member {string}
      */
@@ -163,7 +176,10 @@ function InteractionManager(renderer, options)
      * @private
      */
     this._tempPoint = new core.Point();
-    
+
+    this._queue = [[], []];
+
+    this._eventDisplayOrder = 0;
 
     /**
      * The current resolution
@@ -218,7 +234,7 @@ InteractionManager.prototype.addEvents = function ()
     }
 
     window.document.addEventListener('mousemove',    this.onMouseMove, true);
-    this.interactionDOMElement.addEventListener('mousedown',    this.onMouseDown, true);
+    window.addEventListener('mousedown',    this.onMouseDown, true);
     this.interactionDOMElement.addEventListener('mouseout',     this.onMouseOut, true);
 
     this.interactionDOMElement.addEventListener('touchstart',   this.onTouchStart, true);
@@ -251,7 +267,7 @@ InteractionManager.prototype.removeEvents = function ()
     }
 
     window.document.removeEventListener('mousemove', this.onMouseMove, true);
-    this.interactionDOMElement.removeEventListener('mousedown', this.onMouseDown, true);
+    window.removeEventListener('mousedown', this.onMouseDown, true);
     this.interactionDOMElement.removeEventListener('mouseout',  this.onMouseOut, true);
 
     this.interactionDOMElement.removeEventListener('touchstart', this.onTouchStart, true);
@@ -295,7 +311,7 @@ InteractionManager.prototype.update = function (deltaTime)
         return;
     }
 
-    this.cursor = 'inherit';
+    this.cursor = this.defaultCursorStyle;
 
     this.processInteractive(this.mouse.global, this.renderer._lastObjectRendered, this.processMouseOverOut, true );
 
@@ -342,22 +358,22 @@ InteractionManager.prototype.dispatchEvent = function ( displayObject, eventStri
  */
 InteractionManager.prototype.mapPositionToPoint = function ( point, x, y )
 {
-    var rect = this.interactionDOMElement.getBoundingClientRect();
+    var rect;
+    // IE 11 fix
+    if(!this.interactionDOMElement.parentElement)
+    {
+        rect = { x: 0, y: 0, width: 0, height: 0 };
+    } else {
+        rect = this.interactionDOMElement.getBoundingClientRect();
+    }
     point.x = ( ( x - rect.left ) * (this.interactionDOMElement.width  / rect.width  ) ) / this.resolution;
     point.y = ( ( y - rect.top  ) * (this.interactionDOMElement.height / rect.height ) ) / this.resolution;
 };
 
 /**
- * This function is provides a neat way of crawling through the scene graph and running a specified function on all interactive objects it finds.
- * It will also take care of hit testing the interactive objects and passes the hit across in the function.
- *
- * @param  {PIXI.Point} point the point that is tested for collision
- * @param  {PIXI.Container|PIXI.Sprite|PIXI.extras.TilingSprite} displayObject the displayObject that will be hit test (recurcsivly crawls its children)
- * @param  {Function} func the function that will be called on each interactive object. The displayObject and hit will be passed to the function
- * @param  {boolean} hitTest this indicates if the objects inside should be hit test against the point
- * @return {boolean} returns true if the displayObject hit the point
+ * This is private recursive copy of processInteractive
  */
-InteractionManager.prototype.processInteractive = function (point, displayObject, func, hitTest, interactive)
+InteractionManager.prototype._processInteractive = function (point, displayObject, hitTestOrder, interactive)
 {
     if(!displayObject || !displayObject.visible)
     {
@@ -365,18 +381,21 @@ InteractionManager.prototype.processInteractive = function (point, displayObject
     }
 
     // Took a little while to rework this function correctly! But now it is done and nice and optimised. ^_^
-    // 
+    //
     // This function will now loop through all objects and then only hit test the objects it HAS to, not all of them. MUCH faster..
     // An object will be hit test if the following is true:
-    // 
+    //
     // 1: It is interactive.
     // 2: It belongs to a parent that is interactive AND one of the parents children have not already been hit.
-    // 
+    //
     // As another little optimisation once an interactive object has been hit we can carry on through the scenegraph, but we know that there will be no more hits! So we can avoid extra hit tests
     // A final optimisation is that an object is not hit test directly if a child has already been hit.
-    
-    var hit = false,
+
+    var hit = 0,
         interactiveParent = interactive = displayObject.interactive || interactive;
+
+
+
 
     // if the displayobject has a hitArea, then it does not need to hitTest children.
     if(displayObject.hitArea)
@@ -384,70 +403,127 @@ InteractionManager.prototype.processInteractive = function (point, displayObject
         interactiveParent = false;
     }
 
-    // ** FREE TIP **! If an object is not interacttive or has no buttons in it (such as a game scene!) set interactiveChildren to false for that displayObject.
+    // it has a mask! Then lets hit test that before continuing..
+    if(hitTestOrder < Infinity && displayObject._mask)
+    {
+        if(!displayObject._mask.containsPoint(point))
+        {
+            hitTestOrder = Infinity;
+        }
+    }
+
+    // it has a filterArea! Same as mask but easier, its a rectangle
+    if(hitTestOrder < Infinity && displayObject.filterArea)
+    {
+        if(!displayObject.filterArea.contains(point.x, point.y))
+        {
+            hitTestOrder = Infinity;
+        }
+    }
+
+    // ** FREE TIP **! If an object is not interactive or has no buttons in it (such as a game scene!) set interactiveChildren to false for that displayObject.
     // This will allow pixi to completly ignore and bypass checking the displayObjects children.
     if(displayObject.interactiveChildren)
-    {       
+    {
         var children = displayObject.children;
-        
+
         for (var i = children.length-1; i >= 0; i--)
         {
 
             var child = children[i];
 
-            // time to get recursive.. if this function will return if somthing is hit..
-            if(this.processInteractive(point, child, func, hitTest, interactiveParent))
+            var hitChild = this._processInteractive(point, child, hitTestOrder, interactiveParent);
+            // time to get recursive.. if this function will return if something is hit..
+            if(hitChild)
             {
-                // its a good idea to check if a child has lost its parent.
-                // this means it has been removed whilst looping so its best
-                if(!child.parent)
-                {
-                    continue;
-                }
-
-                hit = true;
-
-                // we no longer need to hit test any more objects in this container as we we now know the parent has been hit
-                interactiveParent = false;
-                
-                // If the child is interactive , that means that the object hit was actually interactive and not just the child of an interactive object. 
-                // This means we no longer need to hit test anything else. We still need to run through all objects, but we don't need to perform any hit tests.
-                if(child.interactive)
-                {
-                    hitTest = false;
-                }
+                hit = hitChild;
+                hitTestOrder = hitChild;
             }
         }
     }
+
+
 
     // no point running this if the item is not interactive or does not have an interactive parent.
     if(interactive)
     {
         // if we are hit testing (as in we have no hit any objects yet)
         // We also don't need to worry about hit testing if once of the displayObjects children has already been hit!
-        if(hitTest && !hit)
-        {  
-            if(displayObject.hitArea)
+        if(hitTestOrder < displayObject.displayOrder)
+        {
+            if(displayObject.hitArea || displayObject.isRaycastPossible)
             {
-                displayObject.worldTransform.applyInverse(point,  this._tempPoint);
-                hit = displayObject.hitArea.contains( this._tempPoint.x, this._tempPoint.y );
-            }
-            else if(displayObject.containsPoint)
-            {
-                hit = displayObject.containsPoint(point, this.renderer );
+                if (displayObject.containsPoint(point)) {
+                    hit = displayObject.displayOrder;
+                }
             }
         }
 
         if(displayObject.interactive)
         {
-            func(displayObject, hit); 
+            this._queueAdd(displayObject, hit);
         }
     }
 
     return hit;
-  
+
 };
 
+/**
+ * This function is provides a neat way of crawling through the scene graph and running a specified function on all interactive objects it finds.
+ * It will also take care of hit testing the interactive objects and passes the hit across in the function.
+ *
+ * @param  {PIXI.Point} point the point that is tested for collision
+ * @param  {PIXI.Container|PIXI.Sprite|PIXI.extras.TilingSprite} displayObject the displayObject that will be hit test (recursively crawls its children)
+ * @param  {boolean} hitTest this indicates if the objects inside should be hit test against the point
+ * @param {Function} func the function that will be called on each interactive object. The displayObject and hit will be passed to the function
+ * @private
+ * @return {boolean} returns true if the displayObject hit the point
+ */
+InteractionManager.prototype.processInteractive = function (point, displayObject, func, hitTest) {
+    this._startInteractionProcess();
+    this._processInteractive(point, displayObject, hitTest ? 0 : Infinity, false);
+    this._finishInteractionProcess(func);
+};
+
+InteractionManager.prototype._startInteractionProcess = function() {
+    this._eventDisplayOrder = 1;
+    this._queue[0].length = 0;
+    this._queue[1].length = 0;
+};
+
+InteractionManager.prototype._queueAdd = function(displayObject, order) {
+    var queue = this._queue;
+    if (order < this._eventDisplayOrder) {
+        queue[0].push(displayObject);
+    } else {
+        if (order > this._eventDisplayOrder) {
+            this._eventDisplayOrder = order;
+            var q = queue[1];
+            for (var i = 0; i < q.length; i++) {
+                queue[0].push(q[i]);
+            }
+            queue[1].length = 0;
+        }
+        queue[1].push(displayObject);
+    }
+};
+
+/**
+ *
+ * @param {Function} func the function that will be called on each interactive object. The displayObject and hit will be passed to the function
+ */
+InteractionManager.prototype._finishInteractionProcess = function(func) {
+    var queue = this._queue;
+    var q = queue[0];
+    for (var i = 0; i < q.length; i++) {
+        func(q[i], false);
+    }
+    q = queue[1];
+    for (i = q.length - 1; i>=0; i--) {
+        func(q[i], true);
+    }
+};
 
 /**
  * Is called when the mouse button is pressed down on the renderer element
@@ -482,7 +558,7 @@ InteractionManager.prototype.onMouseDown = function (event)
 InteractionManager.prototype.processMouseDown = function ( displayObject, hit )
 {
     var e = this.mouse.originalEvent;
-    
+
     var isRightButton = e.button === 2 || e.which === 3;
 
     if(hit)
@@ -491,6 +567,7 @@ InteractionManager.prototype.processMouseDown = function ( displayObject, hit )
         this.dispatchEvent( displayObject, isRightButton ? 'rightdown' : 'mousedown', this.eventData );
     }
 };
+
 
 
 
@@ -563,7 +640,7 @@ InteractionManager.prototype.onMouseMove = function (event)
 
     this.didMove = true;
 
-    this.cursor = 'inherit';
+    this.cursor = this.defaultCursorStyle;
 
     this.processInteractive(this.mouse.global, this.renderer._lastObjectRendered, this.processMouseMove, true );
 
@@ -586,7 +663,7 @@ InteractionManager.prototype.onMouseMove = function (event)
 InteractionManager.prototype.processMouseMove = function ( displayObject, hit )
 {
     this.processMouseOverOut(displayObject, hit);
-    
+
     // only display on mouse over
     if(!this.moveWhenInside || hit)
     {
@@ -609,7 +686,7 @@ InteractionManager.prototype.onMouseOut = function (event)
     // Update internal mouse reference
     this.mapPositionToPoint( this.mouse.global, event.clientX, event.clientY);
 
-    this.interactionDOMElement.style.cursor = 'inherit';
+    this.interactionDOMElement.style.cursor = this.defaultCursorStyle;
 
     // TODO optimize by not check EVERY TIME! maybe half as often? //
     this.mapPositionToPoint( this.mouse.global, event.clientX, event.clientY );
@@ -814,7 +891,7 @@ InteractionManager.prototype.processTouchMove = function ( displayObject, hit )
 /**
  * Grabs an interaction data object from the internal pool
  *
- * @param touchEvent {EventData} The touch event we need to pair with an interactionData object
+ * @param touchEvent {object} The touch event we need to pair with an interactionData object
  *
  * @private
  */

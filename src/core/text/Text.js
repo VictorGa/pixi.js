@@ -1,8 +1,8 @@
 var Sprite = require('../sprites/Sprite'),
     Texture = require('../textures/Texture'),
     math = require('../math'),
-    utils = require('../utils'),
-    CONST = require('../const');
+    CONST = require('../const'),
+    TextStyle = require('./TextStyle');
 
 /**
  * A Text Object will create a line or multiple lines of text. To split a line you can use '\n' in your text string,
@@ -17,28 +17,9 @@ var Sprite = require('../sprites/Sprite'),
  * @class
  * @extends PIXI.Sprite
  * @memberof PIXI
- * @param text {string} The copy that you would like the text to display
- * @param [style] {object} The style parameters
- * @param [style.font] {string} default 'bold 20px Arial' The style and size of the font
- * @param [style.fill='black'] {String|Number} A canvas fillstyle that will be used on the text e.g 'red', '#00FF00'
- * @param [style.align='left'] {string} Alignment for multiline text ('left', 'center' or 'right'), does not affect single line text
- * @param [style.stroke] {String|Number} A canvas fillstyle that will be used on the text stroke e.g 'blue', '#FCFF00'
- * @param [style.strokeThickness=0] {number} A number that represents the thickness of the stroke. Default is 0 (no stroke)
- * @param [style.wordWrap=false] {boolean} Indicates if word wrap should be used
- * @param [style.wordWrapWidth=100] {number} The width at which text will wrap, it needs wordWrap to be set to true
- * @param [style.lineHeight] {number} The line height, a number that represents the vertical space that a letter uses
- * @param [style.dropShadow=false] {boolean} Set a drop shadow for the text
- * @param [style.dropShadowColor='#000000'] {string} A fill style to be used on the dropshadow e.g 'red', '#00FF00'
- * @param [style.dropShadowAngle=Math.PI/4] {number} Set a angle of the drop shadow
- * @param [style.dropShadowDistance=5] {number} Set a distance of the drop shadow
- * @param [style.dropShadowBlur=0] {number} Set a shadow blur radius
- * @param [style.padding=0] {number} Occasionally some fonts are cropped on top or bottom. Adding some padding will
- *      prevent this from happening by adding padding to the top and bottom of text height.
- * @param [style.textBaseline='alphabetic'] {string} The baseline of the text that is rendered.
- * @param [style.lineJoin='miter'] {string} The lineJoin property sets the type of corner created, it can resolve
- *      spiked text issues. Default is 'miter' (creates a sharp corner).
- * @param [style.miterLimit=10] {number} The miter limit to use when using the 'miter' lineJoin mode. This can reduce
- *      or increase the spikiness of rendered text.
+ * @param text {string} The string that you would like the text to display
+ * @param [style] {object|PIXI.TextStyle} The style parameters
+ * @param [resolution=CONST.RESOLUTION] The resolution of the canvas
  */
 function Text(text, style, resolution)
 {
@@ -76,6 +57,21 @@ function Text(text, style, resolution)
      * @private
      */
     this._style = null;
+    /**
+     * Private listener to track style changes.
+     *
+     * @member {Function}
+     * @private
+     */
+    this._styleListener = null;
+
+    /**
+     * Private tracker for the current font.
+     *
+     * @member {string}
+     * @private
+     */
+    this._font = '';
 
     var texture = Texture.fromCanvas(this.canvas);
     texture.trim = new math.Rectangle();
@@ -104,15 +100,14 @@ Object.defineProperties(Text.prototype, {
     width: {
         get: function ()
         {
-            if (this.dirty)
-            {
-                this.updateText();
-            }
+            this.updateText(true);
 
             return this.scale.x * this._texture._frame.width;
         },
         set: function (value)
         {
+            this.updateText(true);
+
             this.scale.x = value / this._texture._frame.width;
             this._width = value;
         }
@@ -127,44 +122,23 @@ Object.defineProperties(Text.prototype, {
     height: {
         get: function ()
         {
-            if (this.dirty)
-            {
-                this.updateText();
-            }
+            this.updateText(true);
 
             return  this.scale.y * this._texture._frame.height;
         },
         set: function (value)
         {
+            this.updateText(true);
+
             this.scale.y = value / this._texture._frame.height;
             this._height = value;
         }
     },
 
     /**
-     * Set the style of the text
+     * Set the style of the text. Set up an event listener to listen for changes on the style object and mark the text as dirty.
      *
-     * @param [style] {object} The style parameters
-     * @param [style.font='bold 20pt Arial'] {string} The style and size of the font
-     * @param [style.fill='black'] {string|number} A canvas fillstyle that will be used on the text eg 'red', '#00FF00'
-     * @param [style.align='left'] {string} Alignment for multiline text ('left', 'center' or 'right'), does not affect single line text
-     * @param [style.stroke='black'] {string|number} A canvas fillstyle that will be used on the text stroke eg 'blue', '#FCFF00'
-     * @param [style.strokeThickness=0] {number} A number that represents the thickness of the stroke. Default is 0 (no stroke)
-     * @param [style.wordWrap=false] {boolean} Indicates if word wrap should be used
-     * @param [style.wordWrapWidth=100] {number} The width at which text will wrap
-     * @param [style.lineHeight] {number} The line height, a number that represents the vertical space that a letter uses
-     * @param [style.dropShadow=false] {boolean} Set a drop shadow for the text
-     * @param [style.dropShadowColor='#000000'] {string|number} A fill style to be used on the dropshadow e.g 'red', '#00FF00'
-     * @param [style.dropShadowAngle=Math.PI/6] {number} Set a angle of the drop shadow
-     * @param [style.dropShadowDistance=5] {number} Set a distance of the drop shadow
-     * @param [style.dropShadowBlur=0] {number} Set a shadow blur radius
-     * @param [style.padding=0] {number} Occasionally some fonts are cropped on top or bottom. Adding some padding will
-     *      prevent this from happening by adding padding to the top and bottom of text height.
-     * @param [style.textBaseline='alphabetic'] {string} The baseline of the text that is rendered.
-     * @param [style.lineJoin='miter'] {string} The lineJoin property sets the type of corner created, it can resolve
-     *      spiked text issues. Default is 'miter' (creates a sharp corner).
-     * @param [style.miterLimit=10] {number} The miter limit to use when using the 'miter' lineJoin mode. This can reduce
-     *      or increase the spikiness of rendered text.
+     * @param [style] {object|PIXI.TextStyle} The style parameters
      * @memberof PIXI.Text#
      */
     style: {
@@ -174,42 +148,21 @@ Object.defineProperties(Text.prototype, {
         },
         set: function (style)
         {
+            if (this._style)
+            {
+                this._style.off(CONST.TEXT_STYLE_CHANGED, this._onStyleChange, this);
+            }
+
             style = style || {};
-
-            if (typeof style.fill === 'number') {
-                style.fill = utils.hex2string(style.fill);
+            if (style instanceof TextStyle)
+            {
+                this._style = style;
             }
-
-            if (typeof style.stroke === 'number') {
-                style.stroke = utils.hex2string(style.stroke);
+            else
+            {
+                this._style = new TextStyle(style);
             }
-
-            if (typeof style.dropShadowColor === 'number') {
-                style.dropShadowColor = utils.hex2string(style.dropShadowColor);
-            }
-
-            style.font = style.font || 'bold 20pt Arial';
-            style.fill = style.fill || 'black';
-            style.align = style.align || 'left';
-            style.stroke = style.stroke || 'black'; //provide a default, see: https://github.com/pixijs/pixi.js/issues/136
-            style.strokeThickness = style.strokeThickness || 0;
-            style.wordWrap = style.wordWrap || false;
-            style.wordWrapWidth = style.wordWrapWidth || 100;
-
-            style.dropShadow = style.dropShadow || false;
-            style.dropShadowColor = style.dropShadowColor || '#000000';
-            style.dropShadowAngle = style.dropShadowAngle !== undefined ? style.dropShadowAngle : Math.PI / 6;
-            style.dropShadowDistance = style.dropShadowDistance !== undefined ? style.dropShadowDistance : 5;
-            style.dropShadowBlur = style.dropShadowBlur !== undefined ? style.dropShadowBlur : 0; //shadowBlur is '0' by default according to HTML
-
-            style.padding = style.padding || 0;
-
-            style.textBaseline = style.textBaseline || 'alphabetic';
-
-            style.lineJoin = style.lineJoin || 'miter';
-            style.miterLimit = style.miterLimit || 10;
-
-            this._style = style;
+            this._style.on(CONST.TEXT_STYLE_CHANGED, this._onStyleChange, this);
             this.dirty = true;
         }
     },
@@ -226,7 +179,10 @@ Object.defineProperties(Text.prototype, {
             return this._text;
         },
         set: function (text){
-            text = text.toString() || ' ';
+
+            text = text || ' ';
+            text = text.toString();
+
             if (this._text === text)
             {
                 return;
@@ -239,13 +195,21 @@ Object.defineProperties(Text.prototype, {
 
 /**
  * Renders text and updates it when needed
- *
+ * @param respectDirty {boolean} Whether to abort updating the text if the Text isn't dirty and the function is called.
  * @private
  */
-Text.prototype.updateText = function ()
+Text.prototype.updateText = function (respectDirty)
 {
+    if (!this.dirty && respectDirty) {
+        return;
+    }
     var style = this._style;
-    this.context.font = style.font;
+
+    // build canvas api font setting from invididual components. Convert a numeric style.fontSize to px
+    var fontSizeString = (typeof style.fontSize === 'number') ? style.fontSize + 'px' : style.fontSize;
+    this._font = style.fontStyle + ' ' + style.fontVariant + ' ' + style.fontWeight + ' ' + fontSizeString + ' ' + style.fontFamily;
+
+    this.context.font = this._font;
 
     // word wrap
     // preserve original text
@@ -257,10 +221,12 @@ Text.prototype.updateText = function ()
     // calculate text width
     var lineWidths = new Array(lines.length);
     var maxLineWidth = 0;
-    var fontProperties = this.determineFontProperties(style.font);
-    for (var i = 0; i < lines.length; i++)
+    var fontProperties = this.determineFontProperties(this._font);
+
+    var i;
+    for (i = 0; i < lines.length; i++)
     {
-        var lineWidth = this.context.measureText(lines[i]).width;
+        var lineWidth = this.context.measureText(lines[i]).width + ((lines[i].length - 1) * style.letterSpacing);
         lineWidths[i] = lineWidth;
         maxLineWidth = Math.max(maxLineWidth, lineWidth);
     }
@@ -271,7 +237,7 @@ Text.prototype.updateText = function ()
         width += style.dropShadowDistance;
     }
 
-    this.canvas.width = ( width + this.context.lineWidth ) * this.resolution;
+    this.canvas.width = Math.ceil( ( width + this.context.lineWidth ) * this.resolution );
 
     // calculate text height
     var lineHeight = this.style.lineHeight || fontProperties.fontSize + style.strokeThickness;
@@ -282,7 +248,7 @@ Text.prototype.updateText = function ()
         height += style.dropShadowDistance;
     }
 
-    this.canvas.height = ( height + this._style.padding * 2 ) * this.resolution;
+    this.canvas.height = Math.ceil( ( height + this._style.padding * 2 ) * this.resolution );
 
     this.context.scale( this.resolution, this.resolution);
 
@@ -295,7 +261,7 @@ Text.prototype.updateText = function ()
     //this.context.fillStyle="#FF0000";
     //this.context.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
-    this.context.font = style.font;
+    this.context.font = this._font;
     this.context.strokeStyle = style.stroke;
     this.context.lineWidth = style.strokeThickness;
     this.context.textBaseline = style.textBaseline;
@@ -333,7 +299,7 @@ Text.prototype.updateText = function ()
 
             if (style.fill)
             {
-                this.context.fillText(lines[i], linePositionX + xShadowOffset, linePositionY + yShadowOffset + this._style.padding);
+                this.drawLetterSpacing(lines[i], linePositionX + xShadowOffset, linePositionY + yShadowOffset + style.padding);
             }
         }
     }
@@ -358,16 +324,61 @@ Text.prototype.updateText = function ()
 
         if (style.stroke && style.strokeThickness)
         {
-            this.context.strokeText(lines[i], linePositionX, linePositionY + this._style.padding);
+            this.drawLetterSpacing(lines[i], linePositionX, linePositionY + style.padding, true);
         }
 
         if (style.fill)
         {
-            this.context.fillText(lines[i], linePositionX, linePositionY + this._style.padding);
+            this.drawLetterSpacing(lines[i], linePositionX, linePositionY + style.padding);
         }
     }
 
     this.updateTexture();
+};
+
+/**
+ * Render the text with letter-spacing.
+ *
+ * @private
+ */
+Text.prototype.drawLetterSpacing = function(text, x, y, isStroke)
+{
+    var style = this._style;
+
+    // letterSpacing of 0 means normal
+    var letterSpacing = style.letterSpacing;
+
+    if (letterSpacing === 0)
+    {
+        if (isStroke)
+        {
+            this.context.strokeText(text, x, y);
+        }
+        else
+        {
+            this.context.fillText(text, x, y);
+        }
+        return;
+    }
+
+    var characters = String.prototype.split.call(text, ''),
+        index = 0,
+        current,
+        currentPosition = x;
+
+    while (index < text.length)
+    {
+        current = characters[index++];
+        if (isStroke)
+        {
+            this.context.strokeText(current, currentPosition, y);
+        }
+        else
+        {
+            this.context.fillText(current, currentPosition, y);
+        }
+        currentPosition += this.context.measureText(current).width + letterSpacing;
+    }
 };
 
 /**
@@ -378,25 +389,27 @@ Text.prototype.updateText = function ()
 Text.prototype.updateTexture = function ()
 {
     var texture = this._texture;
+    var style = this._style;
 
     texture.baseTexture.hasLoaded = true;
     texture.baseTexture.resolution = this.resolution;
 
     texture.baseTexture.width = this.canvas.width / this.resolution;
     texture.baseTexture.height = this.canvas.height / this.resolution;
-    texture.crop.width = texture._frame.width = this.canvas.width / this.resolution;
-    texture.crop.height = texture._frame.height = this.canvas.height / this.resolution;
+    texture.orig.width = texture._frame.width = this.canvas.width / this.resolution;
+    texture.orig.height = texture._frame.height = this.canvas.height / this.resolution;
 
     texture.trim.x = 0;
-    texture.trim.y = -this._style.padding;
+    texture.trim.y = -style.padding;
 
     texture.trim.width = texture._frame.width;
-    texture.trim.height = texture._frame.height - this._style.padding*2;
+    texture.trim.height = texture._frame.height - style.padding*2;
 
     this._width = this.canvas.width / this.resolution;
     this._height = this.canvas.height / this.resolution;
 
     texture.baseTexture.emit('update',  texture.baseTexture);
+    //this._onTextureUpdate();
 
     this.dirty = false;
 };
@@ -406,16 +419,11 @@ Text.prototype.updateTexture = function ()
  *
  * @param renderer {PIXI.WebGLRenderer}
  */
-Text.prototype.renderWebGL = function (renderer)
+Text.prototype._renderWebGL = function (renderer)
 {
-    if (this.dirty)
-    {
-        //this.resolution = 1//renderer.resolution;
+    this.updateText(true);
 
-        this.updateText();
-    }
-
-    Sprite.prototype.renderWebGL.call(this, renderer);
+    Sprite.prototype._renderWebGL.call(this, renderer);
 };
 
 /**
@@ -426,12 +434,7 @@ Text.prototype.renderWebGL = function (renderer)
  */
 Text.prototype._renderCanvas = function (renderer)
 {
-    if (this.dirty)
-    {
-     //   this.resolution = 1//renderer.resolution;
-
-        this.updateText();
-    }
+    this.updateText(true);
 
     Sprite.prototype._renderCanvas.call(this, renderer);
 };
@@ -559,22 +562,48 @@ Text.prototype.wordWrap = function (text)
         for (var j = 0; j < words.length; j++)
         {
             var wordWidth = this.context.measureText(words[j]).width;
-            var wordWidthWithSpace = wordWidth + this.context.measureText(' ').width;
-            if (j === 0 || wordWidthWithSpace > spaceLeft)
+            if (this._style.breakWords && wordWidth > wordWrapWidth)
             {
-                // Skip printing the newline if it's the first word of the line that is
-                // greater than the word wrap width.
-                if (j > 0)
+                // Word should be split in the middle
+                var characters = words[j].split('');
+                for (var c = 0; c < characters.length; c++)
                 {
-                    result += '\n';
+                  var characterWidth = this.context.measureText(characters[c]).width;
+                  if (characterWidth > spaceLeft)
+                  {
+                    result += '\n' + characters[c];
+                    spaceLeft = wordWrapWidth - characterWidth;
+                  }
+                  else
+                  {
+                    if (c === 0)
+                    {
+                      result += ' ';
+                    }
+                    result += characters[c];
+                    spaceLeft -= characterWidth;
+                  }
                 }
-                result += words[j];
-                spaceLeft = wordWrapWidth - wordWidth;
             }
             else
             {
-                spaceLeft -= wordWidthWithSpace;
-                result += ' ' + words[j];
+                var wordWidthWithSpace = wordWidth + this.context.measureText(' ').width;
+                if (j === 0 || wordWidthWithSpace > spaceLeft)
+                {
+                    // Skip printing the newline if it's the first word of the line that is
+                    // greater than the word wrap width.
+                    if (j > 0)
+                    {
+                        result += '\n';
+                    }
+                    result += words[j];
+                    spaceLeft = wordWrapWidth - wordWidth;
+                }
+                else
+                {
+                    spaceLeft -= wordWidthWithSpace;
+                    result += ' ' + words[j];
+                }
             }
         }
 
@@ -592,28 +621,39 @@ Text.prototype.wordWrap = function (text)
  * @param matrix {PIXI.Matrix} the transformation matrix of the Text
  * @return {PIXI.Rectangle} the framing rectangle
  */
-Text.prototype.getBounds = function (matrix)
+Text.prototype.getBounds = function ()
 {
-    if (this.dirty)
-    {
-        this.updateText();
-    }
+    this.updateText(true);
 
-    return Sprite.prototype.getBounds.call(this, matrix);
+    return Sprite.prototype.getBounds.call(this);
 };
 
 /**
- * Destroys this text object.
- *
- * @param [destroyBaseTexture=true] {boolean} whether to destroy the base texture as well
+ * Method to be called upon a TextStyle change.
+ * @private
  */
-Text.prototype.destroy = function (destroyBaseTexture)
+Text.prototype._onStyleChange = function ()
 {
+    this.dirty = true;
+};
+
+/**
+ * Destroys this text
+ *
+ * @param [options] {object|boolean} Options parameter. A boolean will act as if all options have been set to that value
+ * @param [options.children=false] {boolean} if set to true, all the children will have their destroy
+ *      method called as well. 'options' will be passed on to those calls.
+ * @param [options.texture=false] {boolean} Should it destroy the current texture of the sprite as well
+ * @param [options.baseTexture=false] {boolean} Should it destroy the base texture of the sprite as well
+ */
+Text.prototype.destroy = function (options)
+{
+    Sprite.prototype.destroy.call(this, options);
+
     // make sure to reset the the context and canvas.. dont want this hanging around in memory!
     this.context = null;
     this.canvas = null;
 
+    this._style.off(CONST.TEXT_STYLE_CHANGED, this._onStyleChange, this);
     this._style = null;
-
-    this._texture.destroy(destroyBaseTexture === undefined ? true : destroyBaseTexture);
 };

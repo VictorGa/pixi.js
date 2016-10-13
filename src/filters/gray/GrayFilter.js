@@ -1,29 +1,29 @@
 var core = require('../../core');
 // @see https://github.com/substack/brfs/issues/25
-var fs = require('fs');
+var glslify  = require('glslify');
 
 /**
  * This greyscales the palette of your Display Objects.
  *
  * @class
- * @extends PIXI.AbstractFilter
+ * @extends PIXI.Filter
  * @memberof PIXI.filters
  */
 function GrayFilter()
 {
-    core.AbstractFilter.call(this,
+    core.Filter.call(this,
         // vertex shader
-        null,
+        glslify('./gray.vert', 'utf8'),
         // fragment shader
-        fs.readFileSync(__dirname + '/gray.frag', 'utf8'),
-        // set the uniforms
-        {
-            gray: { type: '1f', value: 1 }
-        }
+        glslify('./gray.frag', 'utf8')
     );
+
+    this.uniforms.gray = 1;
+
+    this.glShaderKey = 'gray';
 }
 
-GrayFilter.prototype = Object.create(core.AbstractFilter.prototype);
+GrayFilter.prototype = Object.create(core.Filter.prototype);
 GrayFilter.prototype.constructor = GrayFilter;
 module.exports = GrayFilter;
 
@@ -37,11 +37,11 @@ Object.defineProperties(GrayFilter.prototype, {
     gray: {
         get: function ()
         {
-            return this.uniforms.gray.value;
+            return this.uniforms.gray;
         },
         set: function (value)
         {
-            this.uniforms.gray.value = value;
+            this.uniforms.gray = value;
         }
     }
 });

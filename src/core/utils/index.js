@@ -9,7 +9,6 @@ var utils = module.exports = {
 
     EventEmitter:   require('eventemitter3'),
     pluginTarget:   require('./pluginTarget'),
-    async:          require('async'),
 
     /**
      * Gets the next unique identifier
@@ -19,6 +18,38 @@ var utils = module.exports = {
     uid: function ()
     {
         return ++utils._uid;
+    },
+
+    _uidTransform: 0,
+    _uidUpdateOrder: 0,
+    _uidDisplayOrder: 0,
+    _uidDisplayObject: 0,
+    _uidGeometry: 0,
+    _uidRaycast: 0,
+
+    incTransform: function() {
+        return ++utils._uidTransform;
+    },
+    incUpdateOrder: function() {
+        return ++utils._uidUpdateOrder;
+    },
+    incDisplayOrder: function() {
+        return ++utils._uidDisplayOrder;
+    },
+    incDisplayObject: function() {
+        return ++utils._uidDisplayObject;
+    },
+    incGeometry: function() {
+        return ++utils._uidGeometry;
+    },
+    incRaycast: function() {
+        return ++utils._uidRaycast;
+    },
+    resetUpdateOrder: function() {
+        this._uidUpdateOrder = 0;
+    },
+    resetDisplayOrder: function() {
+        this._uidDisplayOrder = 0;
     },
 
     /**
@@ -64,79 +95,6 @@ var utils = module.exports = {
         return ((rgb[0]*255 << 16) + (rgb[1]*255 << 8) + rgb[2]*255);
     },
 
-    /**
-     * Checks whether the Canvas BlendModes are supported by the current browser
-     *
-     * @return {boolean} whether they are supported
-     */
-    canUseNewCanvasBlendModes: function ()
-    {
-        if (typeof document === 'undefined')
-        {
-            return false;
-        }
-
-        var pngHead = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAABAQMAAADD8p2OAAAAA1BMVEX/';
-        var pngEnd = 'AAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg==';
-
-        var magenta = new Image();
-        magenta.src = pngHead + 'AP804Oa6' + pngEnd;
-
-        var yellow = new Image();
-        yellow.src = pngHead + '/wCKxvRF' + pngEnd;
-
-        var canvas = document.createElement('canvas');
-        canvas.width = 6;
-        canvas.height = 1;
-
-        var context = canvas.getContext('2d');
-        context.globalCompositeOperation = 'multiply';
-        context.drawImage(magenta, 0, 0);
-        context.drawImage(yellow, 2, 0);
-
-        var data = context.getImageData(2,0,1,1).data;
-
-        return (data[0] === 255 && data[1] === 0 && data[2] === 0);
-    },
-
-    /**
-     * Given a number, this function returns the closest number that is a power of two
-     * this function is taken from Starling Framework as its pretty neat ;)
-     *
-     * @param number {number}
-     * @return {number} the closest number that is a power of two
-     */
-    getNextPowerOfTwo: function (number)
-    {
-        // see: http://en.wikipedia.org/wiki/Power_of_two#Fast_algorithm_to_check_if_a_positive_number_is_a_power_of_two
-        if (number > 0 && (number & (number - 1)) === 0)
-        {
-            return number;
-        }
-        else
-        {
-            var result = 1;
-
-            while (result < number)
-            {
-                result <<= 1;
-            }
-
-            return result;
-        }
-    },
-
-    /**
-     * checks if the given width and height make a power of two rectangle
-     *
-     * @param width {number}
-     * @param height {number}
-     * @return {boolean}
-     */
-    isPowerOfTwo: function (width, height)
-    {
-        return (width > 0 && (width & (width - 1)) === 0 && height > 0 && (height & (height - 1)) === 0);
-    },
 
     /**
      * get the resolution of an asset by looking for the prefix
@@ -177,7 +135,7 @@ var utils = module.exports = {
         if (navigator.userAgent.toLowerCase().indexOf('chrome') > -1)
         {
             var args = [
-                '\n %c %c %c Pixi.js ' + CONST.VERSION + ' - ✰ ' + type + ' ✰  %c ' + ' %c ' + ' http://www.pixijs.com/  %c %c ♥%c♥%c♥ \n\n',
+                '\n %c %c %c Pixi.js gameofbombs fork ' + CONST.VERSION + ' - ✰ ' + type + ' ✰  %c ' + ' %c ' + ' http://www.pixijs.com/ https://github.com/gameofbombs/pixi.js %c %c ♥%c♥%c♥ \n\n',
                 'background: #ff66a5; padding:5px 0;',
                 'background: #ff66a5; padding:5px 0;',
                 'color: #ff66a5; background: #030307; padding:5px 0;',
@@ -193,7 +151,7 @@ var utils = module.exports = {
         }
         else if (window.console)
         {
-            window.console.log('Pixi.js ' + CONST.VERSION + ' - ' + type + ' - http://www.pixijs.com/'); //jshint ignore:line
+            window.console.log('Pixi.js gameofbombs fork ' + CONST.VERSION + ' - ' + type + ' - http://www.pixijs.com/ https://github.com/gameofbombs/pixi.js'); //jshint ignore:line
         }
 
         utils._saidHello = true;
@@ -217,7 +175,19 @@ var utils = module.exports = {
             var canvas = document.createElement('canvas'),
                 gl = canvas.getContext('webgl', contextOptions) || canvas.getContext('experimental-webgl', contextOptions);
 
-            return !!(gl && gl.getContextAttributes().stencil);
+            var success = !!(gl && gl.getContextAttributes().stencil);
+            if (gl)
+            {
+                var loseContext = gl.getExtension('WEBGL_lose_context');
+
+                if(loseContext)
+                {
+                    loseContext.loseContext();
+                }
+            }
+            gl = null;
+
+            return success;
         }
         catch (e)
         {
@@ -239,7 +209,7 @@ var utils = module.exports = {
     /**
      * removeItems
      *
-     * @param {array} arr The target array
+     * @param {*[]} arr The target array
      * @param {number} startIdx The index to begin removing from (inclusive)
      * @param {number} removeCount How many items to remove
      */

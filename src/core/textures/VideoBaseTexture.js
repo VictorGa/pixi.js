@@ -1,5 +1,6 @@
 var BaseTexture = require('./BaseTexture'),
-    utils = require('../utils');
+    utils = require('../utils'),
+    ticker = require('../ticker');
 
 /**
  * A texture of a [playing] Video.
@@ -46,28 +47,39 @@ function VideoBaseTexture(source, scaleMode)
 
     BaseTexture.call(this, source, scaleMode);
 
-    /**
-     * Should the base texture automatically update itself, set to true by default
-     *
-     * @member {boolean}
-     * @default true
-     */
-    this.autoUpdate = false;
+    this.width = source.videoWidth;
+       this.height = source.videoHeight;
 
-    this._onUpdate = this._onUpdate.bind(this);
-    this._onCanPlay = this._onCanPlay.bind(this);
+       this.autoUpdate = true;
+       this._isAutoUpdating = false;
 
-    if (!source.complete)
-    {
-        source.addEventListener('canplay', this._onCanPlay);
-        source.addEventListener('canplaythrough', this._onCanPlay);
+       /**
+        * When set to true will automatically play videos used by this texture once
+        * they are loaded. If false, it will not modify the playing state.
+        *
+        * @member {boolean}
+        * @default true
+        */
+       this.autoPlay = true;
 
-        // started playing..
-        source.addEventListener('play', this._onPlayStart.bind(this));
-        source.addEventListener('pause', this._onPlayStop.bind(this));
-    }
+       this.update = this.update.bind(this);
+       this._onCanPlay = this._onCanPlay.bind(this);
 
-    this.__loaded = false;
+       source.addEventListener('play', this._onPlayStart.bind(this));
+       source.addEventListener('pause', this._onPlayStop.bind(this));
+       this.hasLoaded = false;
+       this.__loaded = false;
+
+       if (!this._isSourceReady())
+       {
+           source.addEventListener('canplay', this._onCanPlay);
+           source.addEventListener('canplaythrough', this._onCanPlay);
+       }
+       else
+       {
+           this._onCanPlay();
+       }
+
 }
 
 VideoBaseTexture.prototype = Object.create(BaseTexture.prototype);
@@ -89,57 +101,97 @@ VideoBaseTexture.prototype._onUpdate = function ()
 };
 
 /**
- * Runs the update loop when the video is ready to play
- *
- * @private
- */
-VideoBaseTexture.prototype._onPlayStart = function ()
-{
-    if (!this.autoUpdate)
-    {
-        window.requestAnimationFrame(this._onUpdate);
-        this.autoUpdate = true;
-    }
-};
+    * Returns true if the underlying source is playing.
+    *
+    * @private
+    * @return {boolean} True if playing.
+    */
+   VideoBaseTexture.prototype._isSourcePlaying = function()
+   {
+       const source = this.source;
 
-/**
- * Fired when a pause event is triggered, stops the update loop
- *
- * @private
- */
-VideoBaseTexture.prototype._onPlayStop = function ()
-{
-    this.autoUpdate = false;
-};
+       return (source.currentTime > 0 && source.paused === false && source.ended === false && source.readyState > 2);
+   }
 
-/**
- * Fired when the video is loaded and ready to play
- *
- * @private
- */
-VideoBaseTexture.prototype._onCanPlay = function ()
-{
-    this.hasLoaded = true;
+   /**
+    * Returns true if the underlying source is ready for playing.
+    *
+    * @private
+    * @return {boolean} True if ready.
+    */
+   VideoBaseTexture.prototype._isSourceReady= function()
+   {
+       return this.source.readyState === 3 || this.source.readyState === 4;
+   }
 
-    if (this.source)
-    {
-        this.source.removeEventListener('canplay', this._onCanPlay);
-        this.source.removeEventListener('canplaythrough', this._onCanPlay);
+   /**
+    * Runs the update loop when the video is ready to play
+    *
+    * @private
+    */
+   VideoBaseTexture.prototype._onPlayStart= function()
+   {
+       // Just in case the video has not recieved its can play even yet..
+       if (!this.hasLoaded)
+       {
+           this._onCanPlay();
+       }
 
-        this.width = this.source.videoWidth;
-        this.height = this.source.videoHeight;
+       if (!this._isAutoUpdating && this.autoUpdate)
+       {
+           ticker.shared.add(this.update, this);
+           this._isAutoUpdating = true;
+       }
+   }
 
-        this.source.play();
+   /**
+    * Fired when a pause event is triggered, stops the update loop
+    *
+    * @private
+    */
+   VideoBaseTexture.prototype._onPlayStop= function()
+   {
+       if (this._isAutoUpdating)
+       {
+           ticker.shared.remove(this.update, this);
+           this._isAutoUpdating = false;
+       }
+   }
 
-        // prevent multiple loaded dispatches..
-        if (!this.__loaded)
-        {
-            this.__loaded = true;
-            this.emit('loaded', this);
-        }
-    }
-};
+   /**
+    * Fired when the video is loaded and ready to play
+    *
+    * @private
+    */
+   VideoBaseTexture.prototype._onCanPlay= function()
+   {
+       this.hasLoaded = true;
 
+       if (this.source)
+       {
+           this.source.removeEventListener('canplay', this._onCanPlay);
+           this.source.removeEventListener('canplaythrough', this._onCanPlay);
+
+           this.width = this.source.videoWidth;
+           this.height = this.source.videoHeight;
+
+           // prevent multiple loaded dispatches..
+           if (!this.__loaded)
+           {
+               this.__loaded = true;
+               this.emit('loaded', this);
+           }
+
+           if (this._isSourcePlaying())
+           {
+               this._onPlayStart();
+           }
+           else if (this.autoPlay)
+           {
+               this.source.play();
+           }
+       }
+   }
 /**
  * Destroys this texture
  *

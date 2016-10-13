@@ -1,12 +1,15 @@
 var Container = require('../display/Container'),
+    RenderTexture = require('../textures/RenderTexture'),
     Texture = require('../textures/Texture'),
-    CanvasBuffer = require('../renderers/canvas/utils/CanvasBuffer'),
-    CanvasGraphics = require('../renderers/canvas/utils/CanvasGraphics'),
     GraphicsData = require('./GraphicsData'),
+    GeometrySet = require('../c2d/GeometrySet'),
+    Sprite = require('../sprites/Sprite'),
     math = require('../math'),
     CONST = require('../const'),
-    tempPoint = new math.Point();
-
+    bezierCurveTo = require('./utils/bezierCurveTo'),
+    CanvasRenderer = require('../renderers/canvas/CanvasRenderer'),
+    canvasRenderer,
+    tempMatrix = new math.Matrix();
 /**
  * The Graphics class contains methods used to draw primitive shapes such as lines, circles and
  * rectangles to the display, and to color and fill them.
@@ -144,6 +147,15 @@ function Graphics()
      */
     this.cachedSpriteDirty = false;
 
+
+    this._spriteRect = null;
+    this._fastRect = false;
+
+    this._localBounds = new GeometrySet();
+    this._localBounds.local.size = 4;
+    this.isRaycastCheckingBoundsFirst = true;
+    this.isRaycastPossible = true;
+
     /**
      * When cacheAsBitmap is set to true the graphics object will be rendered as if it was a sprite.
      * This is useful if your graphics element does not change often, as it will speed up the rendering
@@ -157,6 +169,8 @@ function Graphics()
      * @default false
      */
 }
+
+Graphics._SPRITE_TEXTURE = null;
 
 // constructor
 Graphics.prototype = Object.create(Container.prototype);
@@ -289,6 +303,7 @@ Graphics.prototype.quadraticCurveTo = function (cpX, cpY, toX, toY)
         this.moveTo(0,0);
     }
 
+
     var xa,
         ya,
         n = 20,
@@ -344,33 +359,14 @@ Graphics.prototype.bezierCurveTo = function (cpX, cpY, cpX2, cpY2, toX, toY)
         this.moveTo(0,0);
     }
 
-    var n = 20,
-        dt,
-        dt2,
-        dt3,
-        t2,
-        t3,
-        points = this.currentPath.shape.points;
+    var points = this.currentPath.shape.points;
 
     var fromX = points[points.length-2];
     var fromY = points[points.length-1];
 
-    var j = 0;
+    points.length -= 2;
 
-    for (var i = 1; i <= n; ++i)
-    {
-        j = i / n;
-
-        dt = (1 - j);
-        dt2 = dt * dt;
-        dt3 = dt2 * dt;
-
-        t2 = j * j;
-        t3 = t2 * j;
-
-        points.push( dt3 * fromX + 3 * dt2 * j * cpX + 3 * dt * t2 * cpX2 + t3 * toX,
-                     dt3 * fromY + 3 * dt2 * j * cpY + 3 * dt * t2 * cpY2 + t3 * toY);
-    }
+    bezierCurveTo(fromX, fromY, cpX, cpY, cpX2, cpY2, toX, toY, points);
 
     this.dirty = this.boundsDirty = true;
 
@@ -684,34 +680,6 @@ Graphics.prototype.clear = function ()
     return this;
 };
 
-/**
- * Useful function that returns a texture of the graphics object that can then be used to create sprites
- * This can be quite useful if your geometry is complicated and needs to be reused multiple times.
- *
- * @param resolution {number} The resolution of the texture being generated
- * @param scaleMode {number} Should be one of the scaleMode consts
- * @return {PIXI.Texture} a texture of the graphics object
- */
-Graphics.prototype.generateTexture = function (renderer, resolution, scaleMode)
-{
-
-    resolution = resolution || 1;
-
-    var bounds = this.getLocalBounds();
-
-    var canvasBuffer = new CanvasBuffer(bounds.width * resolution, bounds.height * resolution);
-
-    var texture = Texture.fromCanvas(canvasBuffer.canvas, scaleMode);
-    texture.baseTexture.resolution = resolution;
-
-    canvasBuffer.context.scale(resolution, resolution);
-
-    canvasBuffer.context.translate(-bounds.x,-bounds.y);
-
-    CanvasGraphics.renderGraphics(this, canvasBuffer.context);
-
-    return texture;
-};
 
 /**
  * Renders the object using the WebGL renderer
@@ -723,40 +691,57 @@ Graphics.prototype._renderWebGL = function (renderer)
 {
     // if the sprite is not visible or the alpha is 0 then no need to render this element
 
-    // this code may still be needed so leaving for now..
-    //
-    /*
-    if (this._cacheAsBitmap)
-    {
-        if (this.dirty || this.cachedSpriteDirty)
-        {
-            this._generateCachedSprite();
-
-            // we will also need to update the texture on the gpu too!
-            this.updateCachedSpriteTexture();
-
-            this.cachedSpriteDirty = false;
-            this.dirty = false;
-        }
-
-        this._cachedSprite.worldAlpha = this.worldAlpha;
-
-        Sprite.prototype.renderWebGL.call(this._cachedSprite, renderer);
-
-        return;
-    }
-
-    */
-
     if (this.glDirty)
     {
         this.dirty = true;
         this.glDirty = false;
+        this._fastRect = this.graphicsData.length === 1 && this.graphicsData[0].shape.type === CONST.SHAPES.RECT && !this.graphicsData[0].lineWidth;
     }
 
-    renderer.setObjectRenderer(renderer.plugins.graphics);
-    renderer.plugins.graphics.render(this);
+    //TODO this check can be moved to dirty?
+    if(this._fastRect)
+    {
+        this._renderSpriteRect(renderer);
+    }
+    else
+    {
+        renderer.setObjectRenderer(renderer.plugins.graphics);
+        renderer.plugins.graphics.render(this);
+    }
 
+};
+
+Graphics.prototype._renderSpriteRect = function (renderer)
+{
+    var rect = this.graphicsData[0].shape;
+    if(!this._spriteRect)
+    {
+        if(!Graphics._SPRITE_TEXTURE)
+        {
+            Graphics._SPRITE_TEXTURE = RenderTexture.create(10, 10);
+
+            var currentRenderTarget = renderer._activeRenderTarget;
+            renderer.bindRenderTexture(Graphics._SPRITE_TEXTURE);
+            renderer.clear([1,1,1,1]);
+            renderer.bindRenderTarget(currentRenderTarget);
+        }
+
+        this._spriteRect = new Sprite(Graphics._SPRITE_TEXTURE);
+        this._spriteRect.tint = this.graphicsData[0].fillColor;
+        this._spriteRect.alpha = this.graphicsData[0].fillAlpha;
+    }
+
+    this._spriteRect.worldAlpha = this.worldAlpha * this._spriteRect.alpha;
+
+    this._spriteRect.computedTransform = this.computedTransform;
+
+    this._spriteRect.anchor.x = -rect.x / rect.width;
+    this._spriteRect.anchor.y = -rect.y / rect.height;
+    this._spriteRect.size.x = rect.width;
+    this._spriteRect.size.y = rect.height;
+    this._spriteRect.calculateVertices();
+
+    this._spriteRect._renderWebGL(renderer);
 };
 
 /**
@@ -772,64 +757,15 @@ Graphics.prototype._renderCanvas = function (renderer)
         return;
     }
 
-    // if the tint has changed, set the graphics object to dirty.
-    if (this._prevTint !== this.tint) {
-        this.dirty = true;
-    }
-
-    // this code may still be needed so leaving for now..
-    //
-    /*
-    if (this._cacheAsBitmap)
-    {
-        if (this.dirty || this.cachedSpriteDirty)
-        {
-            this._generateCachedSprite();
-
-            // we will also need to update the texture
-            this.updateCachedSpriteTexture();
-
-            this.cachedSpriteDirty = false;
-            this.dirty = false;
-        }
-
-        this._cachedSprite.alpha = this.alpha;
-
-        Sprite.prototype._renderCanvas.call(this._cachedSprite, renderer);
-
-        return;
-    }
-    */
-    var context = renderer.context;
-    var transform = this.worldTransform;
-
-    var compositeOperation = renderer.blendModes[this.blendMode];
-    if (compositeOperation !== context.globalCompositeOperation)
-    {
-        context.globalCompositeOperation = compositeOperation;
-    }
-
-    var resolution = renderer.resolution;
-    context.setTransform(
-        transform.a * resolution,
-        transform.b * resolution,
-        transform.c * resolution,
-        transform.d * resolution,
-        transform.tx * resolution,
-        transform.ty * resolution
-    );
-
-    CanvasGraphics.renderGraphics(this, context);
+    renderer.plugins.graphics.render(this);
 };
 
 /**
  * Retrieves the bounds of the graphic shape as a rectangle object
  *
- * @param [matrix] {PIXI.Matrix} The world transform matrix to use, defaults to this
- *  object's worldTransform.
  * @return {PIXI.Rectangle} the rectangular bounding area
  */
-Graphics.prototype.getBounds = function (matrix)
+Graphics.prototype.getBounds = function ()
 {
     if(!this._currentBounds)
     {
@@ -849,67 +785,29 @@ Graphics.prototype.getBounds = function (matrix)
             this.boundsDirty = false;
         }
 
-        var bounds = this._localBounds;
-
-        var w0 = bounds.x;
-        var w1 = bounds.width + bounds.x;
-
-        var h0 = bounds.y;
-        var h1 = bounds.height + bounds.y;
-
-        var worldTransform = matrix || this.worldTransform;
-
-        var a = worldTransform.a;
-        var b = worldTransform.b;
-        var c = worldTransform.c;
-        var d = worldTransform.d;
-        var tx = worldTransform.tx;
-        var ty = worldTransform.ty;
-
-        var x1 = a * w1 + c * h1 + tx;
-        var y1 = d * h1 + b * w1 + ty;
-
-        var x2 = a * w0 + c * h1 + tx;
-        var y2 = d * h1 + b * w0 + ty;
-
-        var x3 = a * w0 + c * h0 + tx;
-        var y3 = d * h0 + b * w0 + ty;
-
-        var x4 =  a * w1 + c * h0 + tx;
-        var y4 =  d * h0 + b * w1 + ty;
-
-        var maxX = x1;
-        var maxY = y1;
-
-        var minX = x1;
-        var minY = y1;
-
-        minX = x2 < minX ? x2 : minX;
-        minX = x3 < minX ? x3 : minX;
-        minX = x4 < minX ? x4 : minX;
-
-        minY = y2 < minY ? y2 : minY;
-        minY = y3 < minY ? y3 : minY;
-        minY = y4 < minY ? y4 : minY;
-
-        maxX = x2 > maxX ? x2 : maxX;
-        maxX = x3 > maxX ? x3 : maxX;
-        maxX = x4 > maxX ? x4 : maxX;
-
-        maxY = y2 > maxY ? y2 : maxY;
-        maxY = y3 > maxY ? y3 : maxY;
-        maxY = y4 > maxY ? y4 : maxY;
-
-        this._bounds.x = minX;
-        this._bounds.width = maxX - minX;
-
-        this._bounds.y = minY;
-        this._bounds.height = maxY - minY;
-
-        this._currentBounds = this._bounds;
+        this._currentBounds = this._localBounds.getBounds(this.computedTransform, this.worldProjection);
     }
 
     return this._currentBounds;
+};
+
+/**
+ * Retrieves the bounds of the graphic shape as a rectangle object
+ *
+ * @return {PIXI.Rectangle} the rectangular bounding area
+ */
+Graphics.prototype.getLocalBounds = function ()
+{
+    if (this.boundsDirty)
+    {
+        this.updateLocalBounds();
+
+        this.glDirty = true;
+        this.cachedSpriteDirty = true;
+        this.boundsDirty = false;
+    }
+
+    return this._localBounds.local.getBounds();
 };
 
 /**
@@ -918,10 +816,11 @@ Graphics.prototype.getBounds = function (matrix)
 * @param point {PIXI.Point} the point to test
 * @return {boolean} the result of the test
 */
-Graphics.prototype.containsPoint = function( point )
+Graphics.prototype.containsLocalPoint = function( point )
 {
-    this.worldTransform.applyInverse(point,  tempPoint);
-
+    if (!this.getLocalBounds().contains(point.x, point.y)) {
+        return false;
+    }
     var graphicsData = this.graphicsData;
 
     for (var i = 0; i < graphicsData.length; i++)
@@ -936,7 +835,7 @@ Graphics.prototype.containsPoint = function( point )
         // only deal with fills..
         if (data.shape)
         {
-            if ( data.shape.contains( tempPoint.x, tempPoint.y ) )
+            if ( data.shape.contains( point.x, point.y ) )
             {
                 return true;
             }
@@ -958,175 +857,85 @@ Graphics.prototype.updateLocalBounds = function ()
     var minY = Infinity;
     var maxY = -Infinity;
 
-    if (this.graphicsData.length)
+    if (!this.graphicsData.length) {
+        this._localBounds.local.size = 0;
+        return;
+    }
+    var shape, points, x, y, w, h;
+
+    for (var i = 0; i < this.graphicsData.length; i++)
     {
-        var shape, points, x, y, w, h;
+        var data = this.graphicsData[i];
+        var type = data.type;
+        var lineWidth = data.lineWidth;
+        shape = data.shape;
 
-        for (var i = 0; i < this.graphicsData.length; i++)
+        if (type === CONST.SHAPES.RECT || type === CONST.SHAPES.RREC)
         {
-            var data = this.graphicsData[i];
-            var type = data.type;
-            var lineWidth = data.lineWidth;
-            shape = data.shape;
+            x = shape.x - lineWidth/2;
+            y = shape.y - lineWidth/2;
+            w = shape.width + lineWidth;
+            h = shape.height + lineWidth;
 
-            if (type === CONST.SHAPES.RECT || type === CONST.SHAPES.RREC)
+            minX = x < minX ? x : minX;
+            maxX = x + w > maxX ? x + w : maxX;
+
+            minY = y < minY ? y : minY;
+            maxY = y + h > maxY ? y + h : maxY;
+        }
+        else if (type === CONST.SHAPES.CIRC)
+        {
+            x = shape.x;
+            y = shape.y;
+            w = shape.radius + lineWidth/2;
+            h = shape.radius + lineWidth/2;
+
+            minX = x - w < minX ? x - w : minX;
+            maxX = x + w > maxX ? x + w : maxX;
+
+            minY = y - h < minY ? y - h : minY;
+            maxY = y + h > maxY ? y + h : maxY;
+        }
+        else if (type === CONST.SHAPES.ELIP)
+        {
+            x = shape.x;
+            y = shape.y;
+            w = shape.width + lineWidth/2;
+            h = shape.height + lineWidth/2;
+
+            minX = x - w < minX ? x - w : minX;
+            maxX = x + w > maxX ? x + w : maxX;
+
+            minY = y - h < minY ? y - h : minY;
+            maxY = y + h > maxY ? y + h : maxY;
+        }
+        else
+        {
+            // POLY
+            points = shape.points;
+
+            for (var j = 0; j < points.length; j += 2)
             {
-                x = shape.x - lineWidth/2;
-                y = shape.y - lineWidth/2;
-                w = shape.width + lineWidth;
-                h = shape.height + lineWidth;
+                x = points[j];
+                y = points[j+1];
 
-                minX = x < minX ? x : minX;
-                maxX = x + w > maxX ? x + w : maxX;
+                minX = x-lineWidth < minX ? x-lineWidth : minX;
+                maxX = x+lineWidth > maxX ? x+lineWidth : maxX;
 
-                minY = y < minY ? y : minY;
-                maxY = y + h > maxY ? y + h : maxY;
-            }
-            else if (type === CONST.SHAPES.CIRC)
-            {
-                x = shape.x;
-                y = shape.y;
-                w = shape.radius + lineWidth/2;
-                h = shape.radius + lineWidth/2;
-
-                minX = x - w < minX ? x - w : minX;
-                maxX = x + w > maxX ? x + w : maxX;
-
-                minY = y - h < minY ? y - h : minY;
-                maxY = y + h > maxY ? y + h : maxY;
-            }
-            else if (type === CONST.SHAPES.ELIP)
-            {
-                x = shape.x;
-                y = shape.y;
-                w = shape.width + lineWidth/2;
-                h = shape.height + lineWidth/2;
-
-                minX = x - w < minX ? x - w : minX;
-                maxX = x + w > maxX ? x + w : maxX;
-
-                minY = y - h < minY ? y - h : minY;
-                maxY = y + h > maxY ? y + h : maxY;
-            }
-            else
-            {
-                // POLY
-                points = shape.points;
-
-                for (var j = 0; j < points.length; j += 2)
-                {
-                    x = points[j];
-                    y = points[j+1];
-
-                    minX = x-lineWidth < minX ? x-lineWidth : minX;
-                    maxX = x+lineWidth > maxX ? x+lineWidth : maxX;
-
-                    minY = y-lineWidth < minY ? y-lineWidth : minY;
-                    maxY = y+lineWidth > maxY ? y+lineWidth : maxY;
-                }
+                minY = y-lineWidth < minY ? y-lineWidth : minY;
+                maxY = y+lineWidth > maxY ? y+lineWidth : maxY;
             }
         }
     }
-    else
-    {
-        minX = 0;
-        maxX = 0;
-        minY = 0;
-        maxY = 0;
-    }
-
     var padding = this.boundsPadding;
-
-    this._localBounds.x = minX - padding;
-    this._localBounds.width = (maxX - minX) + padding * 2;
-
-    this._localBounds.y = minY - padding;
-    this._localBounds.height = (maxY - minY) + padding * 2;
+    this._localBounds.local.setRectCoords(0, minX - padding, minY + padding, maxX - padding, maxY + padding);
 };
 
-/**
- * Generates the cached sprite when the sprite has cacheAsBitmap = true
- *
- * @private
- */
-/*
-Graphics.prototype._generateCachedSprite = function ()
-{
-    var bounds = this.getLocalBounds();
-
-    if (!this._cachedSprite)
-    {
-        var canvasBuffer = new CanvasBuffer(bounds.width, bounds.height);
-        var texture = Texture.fromCanvas(canvasBuffer.canvas);
-
-        this._cachedSprite = new Sprite(texture);
-        this._cachedSprite.buffer = canvasBuffer;
-
-        this._cachedSprite.worldTransform = this.worldTransform;
-    }
-    else
-    {
-        this._cachedSprite.buffer.resize(bounds.width, bounds.height);
-    }
-
-    // leverage the anchor to account for the offset of the element
-    this._cachedSprite.anchor.x = -( bounds.x / bounds.width );
-    this._cachedSprite.anchor.y = -( bounds.y / bounds.height );
-
-    // this._cachedSprite.buffer.context.save();
-    this._cachedSprite.buffer.context.translate(-bounds.x,-bounds.y);
-
-    // make sure we set the alpha of the graphics to 1 for the render..
-    this.worldAlpha = 1;
-
-    // now render the graphic..
-    CanvasGraphics.renderGraphics(this, this._cachedSprite.buffer.context);
-
-    this._cachedSprite.alpha = this.alpha;
-};
-*/
-/**
- * Updates texture size based on canvas size
- *
- * @private
- */
-/*
-Graphics.prototype.updateCachedSpriteTexture = function ()
-{
-    var cachedSprite = this._cachedSprite;
-    var texture = cachedSprite.texture;
-    var canvas = cachedSprite.buffer.canvas;
-
-    texture.baseTexture.width = canvas.width;
-    texture.baseTexture.height = canvas.height;
-    texture.crop.width = texture.frame.width = canvas.width;
-    texture.crop.height = texture.frame.height = canvas.height;
-
-    cachedSprite._width = canvas.width;
-    cachedSprite._height = canvas.height;
-
-    // update the dirty base textures
-    texture.baseTexture.dirty();
-};*/
-
-/**
- * Destroys a previous cached sprite.
- *
- */
-/*
-Graphics.prototype.destroyCachedSprite = function ()
-{
-    this._cachedSprite.texture.destroy(true);
-
-    // let the gc collect the unused sprite
-    // TODO could be object pooled!
-    this._cachedSprite = null;
-};*/
 
 /**
  * Draws the given shape to this Graphics object. Can be any of Circle, Rectangle, Ellipse, Line or Polygon.
  *
- * @param shape {PIXI.Circle|PIXI.Rectangle|PIXI.Ellipse|PIXI.Line|PIXI.Polygon} The shape object to draw.
+ * @param shape {PIXI.math.Circle|PIXI.math.Ellipse|PIXI.math.Polygon|PIXI.math.Rectangle|PIXI.math.RoundedRectangle} The shape object to draw.
  * @return {PIXI.GraphicsData} The generated GraphicsData object.
  */
 Graphics.prototype.drawShape = function (shape)
@@ -1157,10 +966,59 @@ Graphics.prototype.drawShape = function (shape)
     return data;
 };
 
+Graphics.prototype.generateCanvasTexture = function(scaleMode, resolution)
+{
+    resolution = resolution || 1;
+
+    var bounds = this._legacyLocalBounds();
+
+    var canvasBuffer = new RenderTexture.create(bounds.width * resolution, bounds.height * resolution);
+
+    if(!canvasRenderer)
+    {
+        canvasRenderer = new CanvasRenderer();
+    }
+
+    tempMatrix.tx = -bounds.x;
+    tempMatrix.ty = -bounds.y;
+
+    canvasRenderer.render(this, canvasBuffer, false, tempMatrix);
+
+    var texture = Texture.fromCanvas(canvasBuffer.baseTexture._canvasRenderTarget.canvas, scaleMode);
+    texture.baseTexture.resolution = resolution;
+
+    return texture;
+};
+
+Graphics.prototype.closePath = function ()
+{
+    // ok so close path assumes next one is a hole!
+    var currentPath = this.currentPath;
+    if (currentPath && currentPath.shape)
+    {
+        currentPath.shape.close();
+    }
+    return this;
+};
+
+Graphics.prototype.addHole = function()
+{
+    // this is a hole!
+    var hole = this.graphicsData.pop();
+
+    this.currentPath = this.graphicsData[this.graphicsData.length-1];
+
+    this.currentPath.addHole(hole.shape);
+    this.currentPath = null;
+
+    return this;
+};
+
 /**
  * Destroys the Graphics object.
  */
-Graphics.prototype.destroy = function () {
+Graphics.prototype.destroy = function ()
+{
     Container.prototype.destroy.apply(this, arguments);
 
     // destroy each of the GraphicsData objects
@@ -1175,6 +1033,10 @@ Graphics.prototype.destroy = function () {
         }
     }
 
+    if(this._spriteRect)
+    {
+        this._spriteRect.destroy();
+    }
     this.graphicsData = null;
 
     this.currentPath = null;

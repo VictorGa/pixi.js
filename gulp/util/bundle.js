@@ -18,7 +18,6 @@ var fs          = require('fs'),
 
 // TODO - Concat license header to dev/prod build files.
 function rebundle(devBundle) {
-	devBundle = true;
     if (devBundle) {
         gutil.log('Starting dev rebundle...');
     }
@@ -47,7 +46,7 @@ function rebundle(devBundle) {
                 date: new Date().toISOString(),
                 pkg: require('../../package.json')
             }
-        ));*/
+        ))*/;
 
     if (devBundle) {
         return stream.pipe(debug).once('end', function () {

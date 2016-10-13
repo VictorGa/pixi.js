@@ -1,7 +1,7 @@
 var core = require('../core'),
-    // a sprite use dfor rendering textures..
-    tempPoint = new core.Point(),
-    CanvasTinter = require('../core/renderers/canvas/utils/CanvasTinter');
+    CanvasTinter = require('../core/sprites/canvas/CanvasTinter'),
+    TilingShader = require('./webgl/TilingShader'),
+    tempArray = new Float32Array(4);
 
 /**
  * A tiling sprite is a fast way of rendering a tiling image
@@ -24,7 +24,6 @@ function TilingSprite(texture, width, height)
      */
     this.tileScale = new core.Point(1,1);
 
-
     /**
      * The offset position of the image that is being tiled
      *
@@ -32,10 +31,10 @@ function TilingSprite(texture, width, height)
      */
     this.tilePosition = new core.Point(0,0);
 
-    ///// private
+    //TODO: for v4.1 make dirty uvs separated, and tileScale/tilePosition observable
 
     /**
-     * The with of the tiling sprite
+     * The width of the tiling sprite
      *
      * @member {number}
      * @private
@@ -60,67 +59,8 @@ function TilingSprite(texture, width, height)
 
     this._canvasPattern = null;
 
-    //TODO move..
-    this.shader = new core.AbstractFilter(
-
-      [
-        'precision lowp float;',
-        'attribute vec2 aVertexPosition;',
-        'attribute vec2 aTextureCoord;',
-        'attribute vec4 aColor;',
-
-        'uniform mat3 projectionMatrix;',
-
-        'uniform vec4 uFrame;',
-        'uniform vec4 uTransform;',
-
-        'varying vec2 vTextureCoord;',
-        'varying vec4 vColor;',
-
-        'void main(void){',
-        '   gl_Position = vec4((projectionMatrix * vec3(aVertexPosition, 1.0)).xy, 0.0, 1.0);',
-
-        '   vec2 coord = aTextureCoord;',
-        '   coord -= uTransform.xy;',
-        '   coord /= uTransform.zw;',
-        '   vTextureCoord = coord;',
-
-        '   vColor = vec4(aColor.rgb * aColor.a, aColor.a);',
-        '}'
-      ].join('\n'),
-      [
-        'precision lowp float;',
-
-        'varying vec2 vTextureCoord;',
-        'varying vec4 vColor;',
-
-        'uniform sampler2D uSampler;',
-        'uniform vec4 uFrame;',
-        'uniform vec2 uPixelSize;',
-
-        'void main(void){',
-
-        '   vec2 coord = mod(vTextureCoord, uFrame.zw);',
-        '   coord = clamp(coord, uPixelSize, uFrame.zw - uPixelSize);',
-        '   coord += uFrame.xy;',
-
-        '   gl_FragColor =  texture2D(uSampler, coord) * vColor ;',
-        '}'
-      ].join('\n'),
-
-            // set the uniforms
-            {
-                uFrame: { type: '4fv', value: [0,0,1,1] },
-                uTransform: { type: '4fv', value: [0,0,1,1] },
-                uPixelSize : { type : '2fv', value: [1, 1]}
-            }
-      );
+    this._glDatas = [];
 }
-
-TilingSprite.prototype = Object.create(core.Sprite.prototype);
-TilingSprite.prototype.constructor = TilingSprite;
-module.exports = TilingSprite;
-
 
 Object.defineProperties(TilingSprite.prototype, {
     /**
@@ -158,11 +98,17 @@ Object.defineProperties(TilingSprite.prototype, {
     }
 });
 
-TilingSprite.prototype._onTextureUpdate = function ()
-{
-    return;
-};
+TilingSprite.prototype = Object.create(core.Sprite.prototype);
+TilingSprite.prototype.constructor = TilingSprite;
+module.exports = TilingSprite;
 
+/**
+ * TilingSprite doesnt need that
+ * @private
+ */
+TilingSprite.prototype._onTextureUpdate = function () {
+
+};
 
 /**
  * Renders the object using the WebGL renderer
@@ -172,6 +118,7 @@ TilingSprite.prototype._onTextureUpdate = function ()
  */
 TilingSprite.prototype._renderWebGL = function (renderer)
 {
+
     // tweak our texture temporarily..
     var texture = this._texture;
 
@@ -180,35 +127,75 @@ TilingSprite.prototype._renderWebGL = function (renderer)
         return;
     }
 
-    var tempUvs = texture._uvs,
-        tempWidth = texture._frame.width,
-        tempHeight = texture._frame.height,
-        tw = texture.baseTexture.width,
-        th = texture.baseTexture.height;
+     // get rid of any thing that may be batching.
+    renderer.flush();
 
-    texture._uvs = this._uvs;
-    texture._frame.width = this.width;
-    texture._frame.height = this.height;
+    var gl = renderer.gl;
+    var glData = this._glDatas[renderer.CONTEXT_UID];
 
-    this.shader.uniforms.uPixelSize.value[0] = 1.0/tw;
-    this.shader.uniforms.uPixelSize.value[1] = 1.0/th;
+    if(!glData)
+    {
+        glData = {
+            shader:new TilingShader(gl),
+            quad:new core.Quad(gl)
+        };
 
-    this.shader.uniforms.uFrame.value[0] = tempUvs.x0;
-    this.shader.uniforms.uFrame.value[1] = tempUvs.y0;
-    this.shader.uniforms.uFrame.value[2] = tempUvs.x1 - tempUvs.x0;
-    this.shader.uniforms.uFrame.value[3] = tempUvs.y2 - tempUvs.y0;
+        this._glDatas[renderer.CONTEXT_UID] = glData;
 
-    this.shader.uniforms.uTransform.value[0] = (this.tilePosition.x % (tempWidth * this.tileScale.x)) / this._width;
-    this.shader.uniforms.uTransform.value[1] = (this.tilePosition.y % (tempHeight * this.tileScale.y)) / this._height;
-    this.shader.uniforms.uTransform.value[2] = ( tw / this._width ) * this.tileScale.x;
-    this.shader.uniforms.uTransform.value[3] = ( th / this._height ) * this.tileScale.y;
+        glData.quad.initVao(glData.shader);
+    }
 
-    renderer.setObjectRenderer(renderer.plugins.sprite);
-    renderer.plugins.sprite.render(this);
+    // if the sprite is trimmed and is not a tilingsprite then we need to add the extra space before transforming the sprite coords..
+    var vertices = glData.quad.vertices;
+    var geomVertices = this.geometry.vertices;
+    for (var i=0;i<8;i++) {
+        vertices[i] = geomVertices[i];
+    }
+    glData.quad.upload();
 
-    texture._uvs = tempUvs;
-    texture._frame.width = tempWidth;
-    texture._frame.height = tempHeight;
+    renderer.bindShader(glData.shader);
+    renderer.bindProjection(this.worldProjection);
+
+    var textureUvs = texture._uvs,
+        textureWidth = texture._frame.width,
+        textureHeight = texture._frame.height,
+        textureBaseWidth = texture.baseTexture.width,
+        textureBaseHeight = texture.baseTexture.height;
+
+    var uPixelSize = glData.shader.uniforms.uPixelSize;
+    uPixelSize[0] = 1.0/textureBaseWidth;
+    uPixelSize[1] = 1.0/textureBaseHeight;
+    glData.shader.uniforms.uPixelSize = uPixelSize;
+
+    var uFrame = glData.shader.uniforms.uFrame;
+    uFrame[0] = textureUvs.x0;
+    uFrame[1] = textureUvs.y0;
+    uFrame[2] = textureUvs.x1 - textureUvs.x0;
+    uFrame[3] = textureUvs.y2 - textureUvs.y0;
+    glData.shader.uniforms.uFrame = uFrame;
+
+    var width = this._width;
+    var height = this._height;
+
+    var uTransform = glData.shader.uniforms.uTransform;
+    uTransform[0] = (this.tilePosition.x % (textureWidth * this.tileScale.x)) / width;
+    uTransform[1] = (this.tilePosition.y % (textureHeight * this.tileScale.y)) / height;
+    uTransform[2] = ( textureBaseWidth / width ) * this.tileScale.x;
+    uTransform[3] = ( textureBaseHeight / height ) * this.tileScale.y;
+    glData.shader.setUniformMatrix('translationMatrix', this.computedTransform.matrix);
+    glData.shader.uniforms.uTransform = uTransform;
+    glData.shader.uniforms.alpha = this.worldAlpha;
+
+    var color = tempArray;
+
+    core.utils.hex2rgb(this.tint, color);
+    color[3] = this.worldAlpha;
+
+    glData.shader.uniforms.uColor = color;
+
+    renderer.bindTexture(this._texture, 0);
+    renderer.state.setBlendMode( this.blendMode );
+    glData.quad.draw();
 };
 
 /**
@@ -227,7 +214,7 @@ TilingSprite.prototype._renderCanvas = function (renderer)
     }
 
     var context = renderer.context,
-        transform = this.worldTransform,
+        transform = this.projectionMatrix2d,
         resolution = renderer.resolution,
         baseTexture = texture.baseTexture,
         modX = (this.tilePosition.x / this.tileScale.x) % texture._frame.width,
@@ -238,7 +225,7 @@ TilingSprite.prototype._renderCanvas = function (renderer)
     if(!this._canvasPattern)
     {
         // cut an object from a spritesheet..
-        var tempCanvas = new core.CanvasBuffer(texture._frame.width, texture._frame.height);
+        var tempCanvas = new core.CanvasRenderTarget(texture._frame.width, texture._frame.height);
 
         // Tint the tiling sprite
         if (this.tint !== 0xFFFFFF)
@@ -258,6 +245,8 @@ TilingSprite.prototype._renderCanvas = function (renderer)
         this._canvasPattern = tempCanvas.context.createPattern( tempCanvas.canvas, 'repeat' );
     }
 
+    var width = this._width;
+    var height = this._height;
     // set context state..
     context.globalAlpha = this.worldAlpha;
     context.setTransform(transform.a * resolution,
@@ -270,8 +259,8 @@ TilingSprite.prototype._renderCanvas = function (renderer)
     // TODO - this should be rolled into the setTransform above..
     context.scale(this.tileScale.x,this.tileScale.y);
 
-    context.translate(modX + (this.anchor.x * -this._width ),
-                      modY + (this.anchor.y * -this._height));
+    context.translate(modX + (this.anchor.x * width),
+                      modY + (this.anchor.y * height));
 
     // check blend mode
     var compositeOperation = renderer.blendModes[this.blendMode];
@@ -284,8 +273,8 @@ TilingSprite.prototype._renderCanvas = function (renderer)
     context.fillStyle = this._canvasPattern;
     context.fillRect(-modX,
                      -modY,
-                     this._width / this.tileScale.x,
-                     this._height / this.tileScale.y);
+                     width / this.tileScale.x,
+                     height / this.tileScale.y);
 
 
     //TODO - pretty sure this can be deleted...
@@ -294,13 +283,7 @@ TilingSprite.prototype._renderCanvas = function (renderer)
 };
 
 
-/**
- * Returns the framing rectangle of the sprite as a Rectangle object
-*
- * @return {PIXI.Rectangle} the framing rectangle
- */
-TilingSprite.prototype.getBounds = function ()
-{
+TilingSprite.prototype.calculateVertices = function () {
     var width = this._width;
     var height = this._height;
 
@@ -309,91 +292,7 @@ TilingSprite.prototype.getBounds = function ()
 
     var h0 = height * (1-this.anchor.y);
     var h1 = height * -this.anchor.y;
-
-    var worldTransform = this.worldTransform;
-
-    var a = worldTransform.a;
-    var b = worldTransform.b;
-    var c = worldTransform.c;
-    var d = worldTransform.d;
-    var tx = worldTransform.tx;
-    var ty = worldTransform.ty;
-
-    var x1 = a * w1 + c * h1 + tx;
-    var y1 = d * h1 + b * w1 + ty;
-
-    var x2 = a * w0 + c * h1 + tx;
-    var y2 = d * h1 + b * w0 + ty;
-
-    var x3 = a * w0 + c * h0 + tx;
-    var y3 = d * h0 + b * w0 + ty;
-
-    var x4 =  a * w1 + c * h0 + tx;
-    var y4 =  d * h0 + b * w1 + ty;
-
-    var minX,
-        maxX,
-        minY,
-        maxY;
-
-    minX = x1;
-    minX = x2 < minX ? x2 : minX;
-    minX = x3 < minX ? x3 : minX;
-    minX = x4 < minX ? x4 : minX;
-
-    minY = y1;
-    minY = y2 < minY ? y2 : minY;
-    minY = y3 < minY ? y3 : minY;
-    minY = y4 < minY ? y4 : minY;
-
-    maxX = x1;
-    maxX = x2 > maxX ? x2 : maxX;
-    maxX = x3 > maxX ? x3 : maxX;
-    maxX = x4 > maxX ? x4 : maxX;
-
-    maxY = y1;
-    maxY = y2 > maxY ? y2 : maxY;
-    maxY = y3 > maxY ? y3 : maxY;
-    maxY = y4 > maxY ? y4 : maxY;
-
-    var bounds = this._bounds;
-
-    bounds.x = minX;
-    bounds.width = maxX - minX;
-
-    bounds.y = minY;
-    bounds.height = maxY - minY;
-
-    // store a reference so that if this function gets called again in the render cycle we do not have to recalculate
-    this._currentBounds = bounds;
-
-    return bounds;
-};
-
-/**
- * Checks if a point is inside this tiling sprite
- * @param point {PIXI.Point} the point to check
- */
-TilingSprite.prototype.containsPoint = function( point )
-{
-    this.worldTransform.applyInverse(point,  tempPoint);
-
-    var width = this._width;
-    var height = this._height;
-    var x1 = -width * this.anchor.x;
-    var y1;
-
-    if ( tempPoint.x > x1 && tempPoint.x < x1 + width )
-    {
-        y1 = -height * this.anchor.y;
-
-        if ( tempPoint.y > y1 && tempPoint.y < y1 + height )
-        {
-            return true;
-        }
-    }
-
-    return false;
+    this.geometry.setRectCoords(0, w1, h1, w0, h0);
 };
 
 /**
